@@ -93,23 +93,85 @@ class BinanceOrderBookStream:
             ws: WebSocket连接对象
             message (str): 接收到的JSON消息
             
-        Note:
-            消息解析将在Task_1.1.3中实现
+        币安订单簿消息格式:
+        {
+            "e": "depthUpdate",        // 事件类型
+            "E": 1234567890123,        // 事件时间（毫秒）
+            "s": "ETHUSDT",           // 交易对
+            "U": 123456789,           // 第一个更新ID
+            "u": 123456799,           // 最后一个更新ID
+            "b": [                    // 买单（bids）
+                ["3245.50", "10.5"],  // [价格, 数量]
+                ["3245.40", "8.3"],
+                ...
+            ],
+            "a": [                    // 卖单（asks）
+                ["3245.60", "11.2"],
+                ["3245.70", "9.5"],
+                ...
+            ]
+        }
         """
         try:
-            # 记录接收到的消息（暂不解析，留给下一个任务）
-            logger.debug(f"收到消息: {len(message)} bytes")
-            
-            # 简单验证消息格式
+            # 1. 验证消息格式
             if not message or not isinstance(message, str):
                 logger.warning(f"收到无效消息格式: {type(message)}")
                 return
             
-            # 在Task_1.1.3中将实现详细的数据解析
-            # 这里暂时只记录消息数量
+            # 2. 解析JSON数据
+            try:
+                data = json.loads(message)
+            except json.JSONDecodeError as e:
+                logger.error(f"JSON解析失败: {e}")
+                return
+            
+            # 3. 验证必需字段
+            if 'E' not in data or 'b' not in data or 'a' not in data:
+                logger.warning(f"消息缺少必需字段: {data.keys()}")
+                return
+            
+            # 4. 提取时间戳（毫秒转datetime）
+            timestamp_ms = data['E']
+            timestamp = datetime.fromtimestamp(timestamp_ms / 1000.0)
+            
+            # 5. 提取买单（bids）- 5档
+            bids = []
+            for bid in data['b'][:self.depth_levels]:
+                price = float(bid[0])
+                quantity = float(bid[1])
+                bids.append([price, quantity])
+            
+            # 6. 提取卖单（asks）- 5档
+            asks = []
+            for ask in data['a'][:self.depth_levels]:
+                price = float(ask[0])
+                quantity = float(ask[1])
+                asks.append([price, quantity])
+            
+            # 7. 验证数据完整性
+            if len(bids) < self.depth_levels or len(asks) < self.depth_levels:
+                logger.warning(f"订单簿深度不足: bids={len(bids)}, asks={len(asks)}")
+                return
+            
+            # 8. 构建订单簿数据结构
+            order_book = {
+                'timestamp': timestamp,
+                'symbol': self.symbol.upper(),
+                'bids': bids,
+                'asks': asks,
+                'event_time': timestamp_ms
+            }
+            
+            # 9. 存储到历史记录
+            self.order_book_history.append(order_book)
+            
+            # 10. 定期打印统计信息
             current_count = len(self.order_book_history)
-            if current_count % 100 == 0:  # 每100条消息打印一次
+            if current_count % 100 == 0:  # 每100条打印一次
                 logger.info(f"已接收 {current_count} 条订单簿数据")
+                logger.debug(f"最新数据 - Bid1: {bids[0][0]:.2f}@{bids[0][1]:.4f}, "
+                           f"Ask1: {asks[0][0]:.2f}@{asks[0][1]:.4f}, "
+                           f"Spread: {(asks[0][0] - bids[0][0]):.2f}")
                 
         except Exception as e:
             logger.error(f"处理消息时出错: {e}", exc_info=True)
@@ -149,6 +211,32 @@ class BinanceOrderBookStream:
         # 记录连接统计
         total_records = len(self.order_book_history)
         logger.info(f"本次会话共接收 {total_records} 条订单簿数据")
+    
+    def get_latest_order_book(self):
+        """获取最新的订单簿数据
+        
+        Returns:
+            dict: 最新的订单簿数据，如果没有数据则返回None
+            
+        Example:
+            >>> client = BinanceOrderBookStream()
+            >>> # ... 运行一段时间后 ...
+            >>> latest = client.get_latest_order_book()
+            >>> if latest:
+            ...     print(f"Bid1: {latest['bids'][0]}")
+            ...     print(f"Ask1: {latest['asks'][0]}")
+        """
+        if len(self.order_book_history) == 0:
+            return None
+        return self.order_book_history[-1]
+    
+    def get_order_book_count(self):
+        """获取已接收的订单簿数据总数
+        
+        Returns:
+            int: 订单簿数据数量
+        """
+        return len(self.order_book_history)
     
     def run(self, reconnect=True):
         """启动WebSocket连接
