@@ -2,6 +2,13 @@
 
 > **严格执行原则**: 必须按照任务卡顺序执行，任何修改、删除、添加任务都需要与用户沟通确认
 
+## 🔗 **快速导航**
+
+- **📁 独立任务系统**: [TASKS目录](./TASKS/README.md) - 每个任务都有独立的MD文件
+- **📑 任务索引**: [TASK_INDEX.md](./TASKS/TASK_INDEX.md) - 快速查找所有任务
+- **📜 项目规则**: [PROJECT_RULES.md](./📜PROJECT_RULES.md) - 开发规则（最高优先级）
+- **🎯 开发指导**: [docs/🎯V13_FRESH_START_DEVELOPMENT_GUIDE.md](./docs/🎯V13_FRESH_START_DEVELOPMENT_GUIDE.md)
+
 ---
 
 ## 🎯 **任务卡使用规则**
