@@ -14,6 +14,10 @@ import json
 from datetime import datetime
 from collections import deque
 import logging
+import pandas as pd
+import os
+from pathlib import Path
+import threading
 
 # 配置日志
 logging.basicConfig(
@@ -62,8 +66,15 @@ class BinanceOrderBookStream:
         # WebSocket连接对象（初始化为None）
         self.ws = None
         
+        # 数据存储相关
+        self.save_interval = 60  # 每60秒保存一次
+        self.last_save_time = datetime.now()
+        self.data_dir = Path("v13_ofi_ai_system/data/order_book")
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        
         logger.info(f"BinanceOrderBookStream initialized for {symbol.upper()}")
         logger.info(f"WebSocket URL: {self.ws_url}")
+        logger.info(f"Data directory: {self.data_dir}")
     
     def __repr__(self):
         """对象的字符串表示"""
@@ -238,6 +249,84 @@ class BinanceOrderBookStream:
             int: 订单簿数据数量
         """
         return len(self.order_book_history)
+    
+    def save_to_csv(self, force=False):
+        """保存订单簿数据到CSV文件
+        
+        Args:
+            force (bool): 是否强制保存（忽略时间间隔）
+            
+        Returns:
+            str: 保存的文件路径，如果没有保存则返回None
+            
+        Note:
+            默认每60秒自动保存一次，避免频繁IO操作
+        """
+        # 检查是否需要保存
+        if not force:
+            time_since_last_save = (datetime.now() - self.last_save_time).total_seconds()
+            if time_since_last_save < self.save_interval:
+                return None
+        
+        # 检查是否有数据
+        if len(self.order_book_history) == 0:
+            logger.warning("没有数据可保存")
+            return None
+        
+        try:
+            # 将数据转换为DataFrame格式
+            data_list = []
+            for ob in self.order_book_history:
+                # 展平订单簿数据
+                row = {
+                    'timestamp': ob['timestamp'],
+                    'symbol': ob['symbol'],
+                    'event_time': ob['event_time']
+                }
+                
+                # 添加买单数据（5档）
+                for i, (price, qty) in enumerate(ob['bids'], 1):
+                    row[f'bid_price_{i}'] = price
+                    row[f'bid_qty_{i}'] = qty
+                
+                # 添加卖单数据（5档）
+                for i, (price, qty) in enumerate(ob['asks'], 1):
+                    row[f'ask_price_{i}'] = price
+                    row[f'ask_qty_{i}'] = qty
+                
+                data_list.append(row)
+            
+            # 创建DataFrame
+            df = pd.DataFrame(data_list)
+            
+            # 生成文件名（按日期和时间）
+            filename = f"{self.symbol}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+            filepath = self.data_dir / filename
+            
+            # 保存到CSV
+            df.to_csv(filepath, index=False)
+            
+            # 更新最后保存时间
+            self.last_save_time = datetime.now()
+            
+            logger.info(f"✅ 数据已保存: {filepath} ({len(df)} 条记录)")
+            return str(filepath)
+            
+        except Exception as e:
+            logger.error(f"保存CSV失败: {e}", exc_info=True)
+            return None
+    
+    def auto_save_loop(self):
+        """自动保存循环（在后台线程中运行）"""
+        while self.ws and self.ws.keep_running:
+            try:
+                # 每60秒尝试保存一次
+                import time
+                time.sleep(self.save_interval)
+                self.save_to_csv(force=False)
+            except Exception as e:
+                logger.error(f"自动保存异常: {e}")
+                break
     
     def run(self, reconnect=True):
         """启动WebSocket连接
