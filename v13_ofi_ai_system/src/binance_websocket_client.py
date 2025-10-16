@@ -15,6 +15,7 @@ from datetime import datetime
 from collections import deque
 import logging
 import pandas as pd
+import numpy as np
 import os
 from pathlib import Path
 import threading
@@ -79,13 +80,20 @@ class BinanceOrderBookStream:
         # 序列号和时延跟踪
         self.message_seq = 0  # 消息序列号
         self.last_order_book = None  # 上一个订单簿状态（用于增量检测）
+        self.last_update_id = None  # 上一个更新ID（pu字段）
         
         # 统计数据
         self.stats = {
             'total_messages': 0,
             'start_time': datetime.now(),
             'latency_list': [],
-            'last_print_time': datetime.now()
+            'last_print_time': datetime.now(),
+            'last_metrics_time': datetime.now(),
+            # 序列一致性统计
+            'gaps': 0,  # 序列跳跃次数
+            'max_gap': 0,  # 最大跳跃
+            'reconnects': 0,  # 重连次数
+            'last_seq_u': None,  # 上一次的u值
         }
         
         # 配置增强日志系统
@@ -179,7 +187,7 @@ class BinanceOrderBookStream:
         print()
     
     def print_statistics(self):
-        """打印统计信息"""
+        """打印统计信息（增强版：包含分位数和序列一致性）"""
         elapsed = (datetime.now() - self.stats['start_time']).total_seconds()
         if elapsed == 0:
             return
@@ -195,9 +203,23 @@ class BinanceOrderBookStream:
         print(f"📨 接收消息: {self.stats['total_messages']} 条")
         print(f"⚡ 接收速率: {rate:.2f} 条/秒")
         print(f"📡 平均时延: {avg_latency:.2f}ms")
+        
+        # 时延分位数（硬标准2）
         if self.stats['latency_list']:
+            percentiles = self.calculate_percentiles()
+            print(f"📊 时延分位:")
+            print(f"   - P50 (中位数): {percentiles['p50']:.2f}ms")
+            print(f"   - P95: {percentiles['p95']:.2f}ms")
+            print(f"   - P99: {percentiles['p99']:.2f}ms")
             print(f"📉 最小时延: {min(self.stats['latency_list']):.2f}ms")
             print(f"📈 最大时延: {max(self.stats['latency_list']):.2f}ms")
+        
+        # 序列一致性统计（硬标准3）
+        print(f"🔗 序列一致性:")
+        print(f"   - Gaps (跳跃): {self.stats['gaps']} 次")
+        print(f"   - Max Gap: {self.stats['max_gap']}")
+        print(f"   - Reconnects: {self.stats['reconnects']} 次")
+        
         print(f"💾 缓存数据: {len(self.order_book_history)} 条")
         print("=" * 80)
         print()
@@ -258,14 +280,36 @@ class BinanceOrderBookStream:
                 logger.warning(f"消息缺少必需字段: {data.keys()}")
                 return
             
-            # 4. 计算接收时延
+            # 4. 计算接收时延（增强版）
             receive_time = datetime.now()
-            timestamp_ms = data['E']
+            ts_recv = receive_time.timestamp() * 1000  # 接收时间戳（毫秒）
+            timestamp_ms = data['E']  # 事件时间戳（毫秒）
             timestamp = datetime.fromtimestamp(timestamp_ms / 1000.0)
-            latency_ms = (receive_time - timestamp).total_seconds() * 1000
+            
+            # 计算两种时延
+            latency_event_ms = (receive_time - timestamp).total_seconds() * 1000  # 事件时延
+            pipeline_start = datetime.now()
             
             # 5. 递增序列号
             self.message_seq += 1
+            
+            # 6. 提取更新ID字段（U, u）
+            update_id_first = data.get('U', 0)  # 第一个更新ID
+            update_id_last = data.get('u', 0)   # 最后一个更新ID
+            prev_update_id = self.last_update_id  # 上一个更新ID（pu）
+            
+            # 7. 检测序列一致性（gaps检测）
+            if self.stats['last_seq_u'] is not None:
+                expected_U = self.stats['last_seq_u'] + 1
+                if update_id_first != expected_U:
+                    gap = update_id_first - expected_U
+                    self.stats['gaps'] += 1
+                    self.stats['max_gap'] = max(self.stats['max_gap'], gap)
+                    logger.warning(f"⚠️ 序列跳跃detected! Gap={gap}, Expected U={expected_U}, Actual U={update_id_first}")
+            
+            # 更新last_seq_u
+            self.stats['last_seq_u'] = update_id_last
+            self.last_update_id = update_id_last
             
             # 5. 提取买单（bids）- 5档
             bids = []
@@ -286,22 +330,34 @@ class BinanceOrderBookStream:
                 logger.warning(f"订单簿深度不足: bids={len(bids)}, asks={len(asks)}")
                 return
             
-            # 8. 构建订单簿数据结构（增强版 - 包含seq和latency）
+            # 8. 计算管道时延
+            latency_pipeline_ms = (datetime.now() - pipeline_start).total_seconds() * 1000
+            
+            # 9. 构建订单簿数据结构（完整版 - 满足NDJSON字段要求）
             order_book = {
                 'seq': self.message_seq,  # 序列号
                 'timestamp': timestamp,
                 'symbol': self.symbol.upper(),
                 'bids': bids,
                 'asks': asks,
+                # 新增完整字段
+                'ts_recv': ts_recv,  # 接收时间戳（毫秒）
+                'E': timestamp_ms,  # 事件时间（保留原字段名）
+                'U': update_id_first,  # 第一个更新ID
+                'u': update_id_last,  # 最后一个更新ID
+                'pu': prev_update_id,  # 上一个更新ID
+                'latency_event_ms': round(latency_event_ms, 2),  # 事件时延
+                'latency_pipeline_ms': round(latency_pipeline_ms, 2),  # 管道时延
+                # 保留兼容字段
                 'event_time': timestamp_ms,
-                'latency_ms': round(latency_ms, 2),  # 接收时延
-                'receive_time': receive_time  # 本地接收时间
+                'latency_ms': round(latency_event_ms, 2),
+                'receive_time': receive_time
             }
             
-            # 9. 更新统计数据
+            # 10. 更新统计数据
             self.stats['total_messages'] += 1
-            self.stats['latency_list'].append(latency_ms)
-            # 只保留最近1000个时延数据
+            self.stats['latency_list'].append(latency_event_ms)
+            # 只保留最近1000个时延数据（滚动窗口）
             if len(self.stats['latency_list']) > 1000:
                 self.stats['latency_list'] = self.stats['latency_list'][-1000:]
             
@@ -311,11 +367,12 @@ class BinanceOrderBookStream:
             # 11. 实时写入NDJSON
             self._write_to_ndjson(order_book)
             
-            # 12. 定期打印订单簿（每10秒一次）
+            # 12. 定期打印订单簿和保存指标（每10秒一次）
             time_since_print = (datetime.now() - self.stats['last_print_time']).total_seconds()
             if time_since_print >= 10:
                 self.print_order_book(order_book)
                 self.print_statistics()
+                self.save_metrics_json()  # 新增：保存metrics.json
                 self.stats['last_print_time'] = datetime.now()
             
             # 13. 日志记录（每100条一次）
@@ -358,6 +415,10 @@ class BinanceOrderBookStream:
         logger.warning(f"状态码: {close_status_code}")
         logger.warning(f"关闭消息: {close_msg}")
         
+        # 记录重连次数（硬标准3）
+        self.stats['reconnects'] += 1
+        logger.info(f"重连次数: {self.stats['reconnects']}")
+        
         # 记录连接统计
         total_records = len(self.order_book_history)
         logger.info(f"本次会话共接收 {total_records} 条订单簿数据")
@@ -388,6 +449,68 @@ class BinanceOrderBookStream:
         """
         return len(self.order_book_history)
     
+    def calculate_percentiles(self):
+        """计算时延分位数（硬标准2：p50/p95/p99）
+        
+        Returns:
+            dict: 包含p50, p95, p99的字典
+        """
+        if not self.stats['latency_list']:
+            return {'p50': 0, 'p95': 0, 'p99': 0}
+        
+        latencies = np.array(self.stats['latency_list'])
+        
+        return {
+            'p50': np.percentile(latencies, 50),
+            'p95': np.percentile(latencies, 95),
+            'p99': np.percentile(latencies, 99)
+        }
+    
+    def save_metrics_json(self):
+        """保存指标到metrics.json文件（硬标准4：周期产物）
+        
+        每10秒刷新一次，保存当前运行统计和分位数
+        """
+        try:
+            elapsed = (datetime.now() - self.stats['start_time']).total_seconds()
+            rate = self.stats['total_messages'] / elapsed if elapsed > 0 else 0
+            
+            # 计算分位数
+            percentiles = self.calculate_percentiles()
+            
+            # 构建指标数据
+            metrics = {
+                'timestamp': datetime.now().isoformat(),
+                'runtime_seconds': round(elapsed, 2),
+                'total_messages': self.stats['total_messages'],
+                'message_rate': round(rate, 2),
+                'latency': {
+                    'avg_ms': round(sum(self.stats['latency_list']) / len(self.stats['latency_list']), 2) if self.stats['latency_list'] else 0,
+                    'min_ms': round(min(self.stats['latency_list']), 2) if self.stats['latency_list'] else 0,
+                    'max_ms': round(max(self.stats['latency_list']), 2) if self.stats['latency_list'] else 0,
+                    'p50_ms': round(percentiles['p50'], 2),
+                    'p95_ms': round(percentiles['p95'], 2),
+                    'p99_ms': round(percentiles['p99'], 2)
+                },
+                'sequence_consistency': {
+                    'gaps': self.stats['gaps'],
+                    'max_gap': self.stats['max_gap'],
+                    'reconnects': self.stats['reconnects']
+                },
+                'cache_size': len(self.order_book_history),
+                'symbol': self.symbol.upper()
+            }
+            
+            # 保存到文件
+            metrics_file = self.data_dir / 'metrics.json'
+            with open(metrics_file, 'w', encoding='utf-8') as f:
+                json.dump(metrics, f, indent=2, ensure_ascii=False)
+            
+            logger.debug(f"指标已保存到 {metrics_file}")
+            
+        except Exception as e:
+            logger.error(f"保存metrics.json失败: {e}", exc_info=True)
+    
     def _write_to_ndjson(self, order_book):
         """实时写入NDJSON文件（追加模式）
         
@@ -396,21 +519,28 @@ class BinanceOrderBookStream:
             
         Note:
             NDJSON格式：每行一个JSON对象，便于流式处理和回放
+            完整字段：ts_recv, E, U, u, pu, latency_event_ms, latency_pipeline_ms
         """
         try:
             # 生成今天的文件名
             date_str = datetime.now().strftime('%Y%m%d')
             ndjson_file = self.ndjson_dir / f"{self.symbol}_{date_str}.ndjson"
             
-            # 准备写入的数据（序列化datetime对象）
+            # 准备写入的数据（完整版，包含所有必需字段）
             record = {
                 'seq': order_book['seq'],
                 'timestamp': order_book['timestamp'].isoformat(),
-                'event_time': order_book['event_time'],
-                'latency_ms': order_book['latency_ms'],
                 'symbol': order_book['symbol'],
                 'bids': order_book['bids'],
-                'asks': order_book['asks']
+                'asks': order_book['asks'],
+                # 必需字段（硬标准1）
+                'ts_recv': order_book['ts_recv'],
+                'E': order_book['E'],
+                'U': order_book['U'],
+                'u': order_book['u'],
+                'pu': order_book['pu'],
+                'latency_event_ms': order_book['latency_event_ms'],
+                'latency_pipeline_ms': order_book['latency_pipeline_ms']
             }
             
             # 追加写入（每行一个JSON）
