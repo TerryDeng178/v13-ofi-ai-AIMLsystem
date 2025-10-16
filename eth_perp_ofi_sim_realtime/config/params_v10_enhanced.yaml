@@ -1,0 +1,128 @@
+# V10.0 增强实时市场模拟器配置
+# 集成深度学习模型和3级加权OFI计算
+
+sim:
+  seed: 42
+  seconds: 300  # 5分钟模拟
+  init_mid: 2500.0
+  tick_size: 0.1
+  base_spread_ticks: 2
+  base_depth: 30.0
+  depth_jitter: 0.6
+  levels: 5
+  
+  # 市场状态模拟
+  regimes:
+    - {name: trend_up,   prob: 0.25, mu:  0.20, sigma: 1.8,  dur_mean_s: 30}
+    - {name: trend_down, prob: 0.25, mu: -0.20, sigma: 1.8,  dur_mean_s: 30}
+    - {name: mean_rev,   prob: 0.40, mu:  0.00, sigma: 1.2,  dur_mean_s: 45}
+    - {name: burst,      prob: 0.10, mu:  0.00, sigma: 4.0,  dur_mean_s: 6}
+    
+  # 订单流模拟
+  rates:
+    limit_add:   120
+    limit_cancel: 80
+    market_sweep: 35
+  spoof_ratio: 0.08
+  sweep_levels_mean: 1.4
+  minute_drift_bps: 0.0
+
+# 延迟配置
+latency:
+  upstream_ms: 80
+  compute_ms: 15
+  decision_ms: 10
+  downstream_ms: 80
+
+# V10增强OFI配置
+ofi:
+  micro_window_ms: 100
+  consecutive_windows: 2
+  z_window_seconds: 900
+  ofi_long_z: 2.0
+  ofi_short_z: -2.0
+  
+  # 3级加权OFI配置
+  levels: 3
+  weights: [0.5, 0.3, 0.2]  # 第1级50%，第2级30%，第3级20%
+  
+  # 深度学习配置
+  deep_learning:
+    enabled: true
+    model_type: "ensemble"  # lstm, cnn, transformer, ensemble
+    sequence_length: 60
+    feature_dim: 20
+    prediction_threshold: 0.7
+    confidence_threshold: 0.8
+    
+  # 实时优化配置
+  real_time_optimization:
+    enabled: true
+    adaptation_rate: 0.1
+    performance_window: 50
+    min_performance_threshold: 0.6
+
+# 信号配置
+signals:
+  thin_spread_bps_max: 16.0
+  use_reclaim: true
+  reclaim_lookback_ms: 1500
+  reclaim_confirm_ms: 100
+  
+  # V10增强信号配置
+  v10_enhanced:
+    ofi_threshold: 1.2
+    min_signal_strength: 1.6
+    min_confidence: 0.8
+    adaptive_thresholds: true
+    
+  # 实时优化信号配置
+  real_time_optimized:
+    ofi_threshold: 1.0
+    min_signal_strength: 1.4
+    min_confidence: 0.7
+    frequency_boost: true
+
+# 成本配置
+costs:
+  fee_bps: 2.5
+  slip_bps_per_100k: 3.0
+  notional_per_trade: 50000
+
+# 评估配置
+eval:
+  horizon_ms: 2000
+  stop_ticks: 6
+  target_ticks: 9
+  
+  # V10增强评估
+  v10_enhanced:
+    signal_quality_threshold: 0.8
+    performance_tracking: true
+    adaptive_learning: true
+    model_retraining_frequency: 100
+
+# WebSocket配置
+websocket:
+  host: "127.0.0.1"
+  port: 8765
+  max_connections: 100
+  heartbeat_interval: 30
+  message_buffer_size: 1000
+
+# 日志配置
+logging:
+  level: "INFO"
+  file: "v10_enhanced.log"
+  max_size_mb: 10
+  backup_count: 5
+
+# 性能监控配置
+monitoring:
+  enabled: true
+  update_interval: 1.0
+  stats_window: 100
+  alert_thresholds:
+    max_drawdown: 0.1
+    min_win_rate: 0.4
+    max_latency_ms: 100
