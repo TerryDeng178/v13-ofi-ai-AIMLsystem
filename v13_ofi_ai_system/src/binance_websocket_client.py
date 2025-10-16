@@ -180,6 +180,8 @@ class BinanceOrderBookStream:
         u = data.get("u")  # last
         pu = data.get("pu")  # previous last
         E = data.get("E", data.get("T", ts_recv))  # event time
+        
+        self.logger.debug(f"Message data keys: {list(data.keys())}, U={U}, u={u}, pu={pu}")
 
         if U is None or u is None:
             # Not a depthUpdate
