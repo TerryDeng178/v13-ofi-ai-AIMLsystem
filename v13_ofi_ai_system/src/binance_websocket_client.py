@@ -96,7 +96,7 @@ class BinanceOrderBookStream:
             rotate_sec=rotate_sec,
             max_bytes=max_bytes,
             backups=backups,
-            level=logging.INFO,
+            level=logging.DEBUG,
             queue_max=10000,
             to_console=True,
         )
@@ -165,6 +165,7 @@ class BinanceOrderBookStream:
 
     def on_message(self, ws, raw: str):
         ts_recv = now_ms()
+        self.logger.debug(f"Received message (length={len(raw)})")
         try:
             msg = json.loads(raw)
         except json.JSONDecodeError as e:
@@ -182,6 +183,7 @@ class BinanceOrderBookStream:
 
         if U is None or u is None:
             # Not a depthUpdate
+            self.logger.debug(f"Skipping non-depthUpdate message: U={U}, u={u}")
             return
 
         # Latency
