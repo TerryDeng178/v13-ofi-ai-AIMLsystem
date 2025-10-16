@@ -19,11 +19,7 @@ import os
 from pathlib import Path
 import threading
 
-# 配置日志
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+# 配置日志（基础配置）
 logger = logging.getLogger(__name__)
 
 
@@ -84,9 +80,22 @@ class BinanceOrderBookStream:
         self.message_seq = 0  # 消息序列号
         self.last_order_book = None  # 上一个订单簿状态（用于增量检测）
         
+        # 统计数据
+        self.stats = {
+            'total_messages': 0,
+            'start_time': datetime.now(),
+            'latency_list': [],
+            'last_print_time': datetime.now()
+        }
+        
+        # 配置增强日志系统
+        self._setup_logging()
+        
+        logger.info(f"="*60)
         logger.info(f"BinanceOrderBookStream initialized for {symbol.upper()}")
         logger.info(f"WebSocket URL: {self.ws_url}")
         logger.info(f"Data directory: {self.data_dir}")
+        logger.info(f"="*60)
     
     def __repr__(self):
         """对象的字符串表示"""
@@ -97,6 +106,101 @@ class BinanceOrderBookStream:
         status = "connected" if self.ws else "not connected"
         history_size = len(self.order_book_history)
         return f"BinanceOrderBookStream({self.symbol.upper()}, {status}, {history_size} records)"
+    
+    def _setup_logging(self):
+        """配置增强的日志系统（控制台+文件）"""
+        # 创建日志目录
+        log_dir = Path("v13_ofi_ai_system/logs")
+        log_dir.mkdir(parents=True, exist_ok=True)
+        
+        # 日志文件名（按日期）
+        log_file = log_dir / f"{self.symbol}_{datetime.now().strftime('%Y%m%d')}.log"
+        
+        # 配置日志格式
+        formatter = logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S'
+        )
+        
+        # 文件处理器
+        file_handler = logging.FileHandler(log_file, encoding='utf-8')
+        file_handler.setLevel(logging.INFO)
+        file_handler.setFormatter(formatter)
+        
+        # 控制台处理器
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(logging.INFO)
+        console_handler.setFormatter(formatter)
+        
+        # 添加处理器到logger
+        logger.addHandler(file_handler)
+        logger.addHandler(console_handler)
+        logger.setLevel(logging.INFO)
+        
+        logger.info(f"日志系统已配置: {log_file}")
+    
+    def print_order_book(self, order_book):
+        """实时打印订单簿数据（格式化显示）"""
+        print()
+        print("=" * 80)
+        print(f"📊 实时订单簿 - {order_book['symbol']} - Seq: {order_book['seq']}")
+        print("=" * 80)
+        print(f"⏰ 时间: {order_book['timestamp'].strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]}")
+        print(f"📡 时延: {order_book['latency_ms']:.2f}ms")
+        print()
+        
+        # 打印买单
+        print("💚 买单（Bids）:")
+        print(f"  {'档位':<8} {'价格':>12} {'数量':>15} {'总额':>15}")
+        print("-" * 55)
+        for i, (price, qty) in enumerate(order_book['bids'], 1):
+            total = price * qty
+            print(f"  档位{i:<5} {price:>12.2f} {qty:>15.4f} {total:>15.2f}")
+        
+        print()
+        
+        # 打印卖单
+        print("❤️  卖单（Asks）:")
+        print(f"  {'档位':<8} {'价格':>12} {'数量':>15} {'总额':>15}")
+        print("-" * 55)
+        for i, (price, qty) in enumerate(order_book['asks'], 1):
+            total = price * qty
+            print(f"  档位{i:<5} {price:>12.2f} {qty:>15.4f} {total:>15.2f}")
+        
+        # 打印价差
+        spread = order_book['asks'][0][0] - order_book['bids'][0][0]
+        mid_price = (order_book['asks'][0][0] + order_book['bids'][0][0]) / 2
+        spread_bps = (spread / mid_price) * 10000
+        
+        print()
+        print(f"📈 价差: {spread:.2f} USDT ({spread_bps:.2f} bps)")
+        print(f"📊 中间价: {mid_price:.2f} USDT")
+        print("=" * 80)
+        print()
+    
+    def print_statistics(self):
+        """打印统计信息"""
+        elapsed = (datetime.now() - self.stats['start_time']).total_seconds()
+        if elapsed == 0:
+            return
+        
+        rate = self.stats['total_messages'] / elapsed
+        avg_latency = sum(self.stats['latency_list']) / len(self.stats['latency_list']) if self.stats['latency_list'] else 0
+        
+        print()
+        print("=" * 80)
+        print("📊 运行统计")
+        print("=" * 80)
+        print(f"⏱️  运行时间: {elapsed:.1f}秒")
+        print(f"📨 接收消息: {self.stats['total_messages']} 条")
+        print(f"⚡ 接收速率: {rate:.2f} 条/秒")
+        print(f"📡 平均时延: {avg_latency:.2f}ms")
+        if self.stats['latency_list']:
+            print(f"📉 最小时延: {min(self.stats['latency_list']):.2f}ms")
+            print(f"📈 最大时延: {max(self.stats['latency_list']):.2f}ms")
+        print(f"💾 缓存数据: {len(self.order_book_history)} 条")
+        print("=" * 80)
+        print()
     
     def on_open(self, ws):
         """WebSocket连接成功时的回调
@@ -194,20 +298,30 @@ class BinanceOrderBookStream:
                 'receive_time': receive_time  # 本地接收时间
             }
             
-            # 9. 存储到历史记录
+            # 9. 更新统计数据
+            self.stats['total_messages'] += 1
+            self.stats['latency_list'].append(latency_ms)
+            # 只保留最近1000个时延数据
+            if len(self.stats['latency_list']) > 1000:
+                self.stats['latency_list'] = self.stats['latency_list'][-1000:]
+            
+            # 10. 存储到历史记录
             self.order_book_history.append(order_book)
             
-            # 10. 实时写入NDJSON
+            # 11. 实时写入NDJSON
             self._write_to_ndjson(order_book)
             
-            # 11. 定期打印统计信息
-            current_count = len(self.order_book_history)
-            if current_count % 100 == 0:  # 每100条打印一次
-                logger.info(f"已接收 {current_count} 条订单簿数据")
-                logger.debug(f"最新数据 - Bid1: {bids[0][0]:.2f}@{bids[0][1]:.4f}, "
-                           f"Ask1: {asks[0][0]:.2f}@{asks[0][1]:.4f}, "
-                           f"Spread: {(asks[0][0] - bids[0][0]):.2f}, "
-                           f"Latency: {latency_ms:.1f}ms")
+            # 12. 定期打印订单簿（每10秒一次）
+            time_since_print = (datetime.now() - self.stats['last_print_time']).total_seconds()
+            if time_since_print >= 10:
+                self.print_order_book(order_book)
+                self.print_statistics()
+                self.stats['last_print_time'] = datetime.now()
+            
+            # 13. 日志记录（每100条一次）
+            if self.stats['total_messages'] % 100 == 0:
+                logger.info(f"已接收 {self.stats['total_messages']} 条订单簿数据, "
+                           f"速率: {self.stats['total_messages'] / (datetime.now() - self.stats['start_time']).total_seconds():.2f} 条/秒")
                 
         except Exception as e:
             logger.error(f"处理消息时出错: {e}", exc_info=True)
