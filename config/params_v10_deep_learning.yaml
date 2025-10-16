@@ -1,0 +1,228 @@
+# Strategy parameters - v10 深度学习集成版
+# 目标：集成深度学习模型，实现高级优化算法，建立Web仪表板系统
+data:
+  path: examples/sample_data.csv
+  tz: UTC
+
+risk:
+  max_trade_risk_pct: 0.01
+  daily_drawdown_stop_pct: 0.08
+  atr_stop_lo: 0.06              # 进一步收紧止损 (v9: 0.08)
+  atr_stop_hi: 2.5               # 进一步提高止盈 (v9: 2.0) -> 41:1盈亏比
+  min_tick_sl_mult: 2
+  time_exit_seconds_min: 30
+  time_exit_seconds_max: 300
+  slip_bps_budget_frac: 0.15     # 进一步收紧滑点预算 (v9: 0.2)
+  fee_bps: 0.2                  # 进一步降低手续费假设 (v9: 0.3)
+  time_tp_enabled: true
+  time_tp_vwap_seconds: 60
+  time_tp_15r_seconds: 120
+  time_tp_15r_multiplier: 2.5    # 提高止盈倍数 (v9: 2.0)
+
+features:
+  atr_window: 14
+  vwap_window_seconds: 1800
+  ofi_window_seconds: 2
+  ofi_levels: 5
+  z_window: 1200
+  # 高级特征工程
+  feature_dim: 50                # 特征维度扩展到50+
+  sequence_length: 60            # 序列长度
+  feature_selection_k: 50       # 特征选择数量
+  feature_scaling: 'standard'   # 特征缩放方法
+
+# 深度学习模型配置
+deep_learning:
+  enabled: true
+  models:
+    lstm:
+      input_dim: 50
+      hidden_dim: 128
+      num_layers: 3
+      dropout: 0.2
+      attention_heads: 8
+      learning_rate: 0.001
+      weight_decay: 1e-5
+      epochs: 100
+      batch_size: 32
+      early_stopping_patience: 20
+    
+    cnn:
+      input_channels: 1
+      num_classes: 10
+      feature_dim: 50
+      sequence_length: 60
+      learning_rate: 0.001
+      weight_decay: 1e-5
+      epochs: 100
+      batch_size: 32
+      early_stopping_patience: 20
+    
+    transformer:
+      input_dim: 50
+      d_model: 128
+      nhead: 8
+      num_layers: 6
+      dim_feedforward: 512
+      dropout: 0.1
+      learning_rate: 0.001
+      weight_decay: 1e-5
+      warmup_steps: 1000
+      epochs: 100
+      batch_size: 32
+      early_stopping_patience: 20
+    
+    ensemble:
+      ensemble_method: 'weighted_average'  # 'weighted_average', 'attention', 'stacking'
+      learning_rate: 0.001
+      weight_decay: 1e-5
+      epochs: 100
+      batch_size: 32
+      early_stopping_patience: 20
+
+# 高级优化算法配置
+optimization:
+  genetic_algorithm:
+    enabled: true
+    population_size: 100
+    generations: 100
+    mutation_rate: 0.1
+    crossover_rate: 0.8
+    selection_method: 'tournament'
+    tournament_size: 3
+  
+  reinforcement_learning:
+    enabled: true
+    algorithm: 'PPO'  # 'PPO', 'A3C', 'DQN'
+    learning_rate: 0.001
+    gamma: 0.99
+    epsilon: 0.1
+    episodes: 1000
+    batch_size: 64
+    memory_size: 10000
+  
+  bayesian_optimization:
+    enabled: true
+    n_iterations: 100
+    acquisition_function: 'EI'  # 'EI', 'PI', 'UCB'
+    kernel: 'RBF'
+    alpha: 1e-6
+  
+  multi_objective:
+    enabled: true
+    objectives: ['sharpe_ratio', 'max_drawdown', 'profit_factor']
+    weights: [0.4, 0.3, 0.3]
+    pareto_front_size: 50
+
+signals:
+  deep_learning_enhanced:
+    ofi_z_min: 1.2               # 进一步降低阈值 (v9: 1.4)
+    min_ret: 0.0
+    min_signal_strength: 1.6     # 适度降低强度要求 (v9: 1.8)
+    min_ml_prediction: 0.8       # 提高ML预测阈值 (v9: 0.7)
+    min_uncertainty: 0.1         # 最小不确定性阈值
+    max_uncertainty: 0.9         # 最大不确定性阈值
+    thin_book_spread_bps_max: 4.0 # 收紧spread要求 (v9: 5.0)
+    adaptive_thresholds: true
+    quantile_window: 1000        # 缩短量化窗口 (v9: 1200)
+    momentum_quantile_hi: 0.70   # 提高动量分位数 (v9: 0.65)
+    momentum_quantile_lo: 0.30   # 降低动量分位数 (v9: 0.35)
+  
+  real_time_optimization:
+    enabled: true
+    update_frequency: 5          # 每5个bar更新一次 (v9: 10)
+    performance_window: 30       # 性能评估窗口 (v9: 50)
+    adaptation_rate: 0.15        # 自适应学习率 (v9: 0.1)
+    min_performance_threshold: 0.7 # 最小性能阈值 (v9: 0.6)
+
+entry:
+  use_limit_for_divergence: true
+sizing:
+  k_ofi: 0.7                     # 提高仓位倍数 (v9: 0.6)
+  size_max_usd: 300000           # 提高最大仓位 (v9: 200000)
+
+execution:
+  ioc: true
+  fok: false
+  slippage_budget_check: false
+  max_slippage_bps: 8.0          # 收紧滑点限制 (v9: 10.0)
+  session_window_minutes: 60
+  reject_on_budget_exceeded: false
+
+# Web仪表板配置
+web_dashboard:
+  enabled: true
+  frontend:
+    framework: 'React'
+    port: 3000
+    real_time_update: true
+    chart_library: 'D3.js'
+    ui_framework: 'Material-UI'
+  
+  backend:
+    framework: 'FastAPI'
+    port: 8000
+    websocket_enabled: true
+    api_version: 'v1'
+    cors_enabled: true
+  
+  database:
+    type: 'SQLite'  # 'SQLite', 'PostgreSQL', 'MySQL'
+    path: 'data/trading.db'
+    connection_pool: 10
+  
+  monitoring:
+    update_frequency: 5          # 更新频率(秒)
+    alert_thresholds:
+      max_drawdown: 0.05
+      min_win_rate: 0.85
+      max_slippage: 12.0
+      min_profitability: 0.8
+    performance_metrics:
+      - 'win_rate'
+      - 'profit_factor'
+      - 'sharpe_ratio'
+      - 'max_drawdown'
+      - 'cost_efficiency'
+      - 'signal_quality'
+      - 'ml_prediction_accuracy'
+    real_time_alerts: true
+
+# 稳定性验证配置
+stability_validation:
+  enabled: true
+  multi_market_test:
+    market_conditions: ['bull', 'bear', 'sideways', 'high_vol', 'low_vol']
+    test_duration_days: 30
+    min_trades_per_condition: 10
+  
+  stress_test:
+    scenarios: ['market_crash', 'flash_crash', 'liquidity_crisis', 'high_frequency_shock']
+    stress_intensity: [0.1, 0.2, 0.3, 0.5]
+    survival_rate_threshold: 0.8
+  
+  long_term_backtest:
+    start_date: '2020-01-01'
+    end_date: '2024-12-31'
+    time_periods: ['yearly', 'quarterly', 'monthly']
+    parameter_stability_check: true
+    performance_decay_analysis: true
+  
+  live_simulation:
+    enabled: true
+    simulation_duration_days: 7
+    real_time_data: true
+    transaction_costs: true
+    latency_simulation: true
+
+backtest:
+  initial_equity_usd: 100000
+  contract_multiplier: 1.0
+  seed: 42
+  # 高级回测配置
+  monte_carlo_runs: 100
+  confidence_level: 0.95
+  bootstrap_samples: 1000
+  walk_forward_analysis: true
+  walk_forward_window: 252  # 交易日
+  walk_forward_step: 63     # 交易日
