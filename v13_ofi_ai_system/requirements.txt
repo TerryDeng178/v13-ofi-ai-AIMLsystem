@@ -1,0 +1,33 @@
+# V13 OFI+AI 量化交易系统 - Python依赖包
+# 最小化依赖，只安装必需的包
+
+# 核心数据处理
+numpy>=1.24.0
+pandas>=2.0.0
+
+# 币安API和WebSocket
+python-binance>=1.0.19
+websocket-client>=1.6.0
+
+# 机器学习（阶段3开始使用）
+# scikit-learn>=1.3.0
+# xgboost>=2.0.0
+
+# 深度学习（阶段4开始使用，可选）
+# torch>=2.0.0
+# torchvision>=0.15.0
+
+# 数据可视化（可选）
+# matplotlib>=3.7.0
+# plotly>=5.14.0
+
+# 日志和监控（可选）
+# loguru>=0.7.0
+
+# 测试（可选）
+# pytest>=7.4.0
+# pytest-cov>=4.1.0
+
+# 配置管理
+pyyaml>=6.0
+

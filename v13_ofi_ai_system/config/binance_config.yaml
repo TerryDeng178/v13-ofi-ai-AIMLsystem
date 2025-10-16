@@ -1,0 +1,38 @@
+# 币安API配置文件
+# 请填入您的API密钥
+
+binance:
+  # 测试网配置（用于开发和测试）
+  testnet:
+    api_key: "YOUR_TESTNET_API_KEY_HERE"
+    api_secret: "YOUR_TESTNET_API_SECRET_HERE"
+    base_url: "https://testnet.binancefuture.com"
+    ws_url: "wss://stream.binancefuture.com"
+  
+  # 主网配置（用于实盘交易，谨慎使用）
+  mainnet:
+    api_key: "YOUR_MAINNET_API_KEY_HERE"
+    api_secret: "YOUR_MAINNET_API_SECRET_HERE"
+    base_url: "https://fapi.binance.com"
+    ws_url: "wss://fstream.binance.com"
+
+# 交易配置
+trading:
+  symbol: "ETHUSDT"  # 交易对
+  max_position_size: 0.01  # 最大仓位（ETH）
+  stop_loss_pct: 0.01  # 止损比例（1%）
+  take_profit_pct: 0.02  # 止盈比例（2%）
+
+# OFI配置
+ofi:
+  levels: 5  # 订单簿档位数
+  weights: [0.4, 0.25, 0.2, 0.1, 0.05]  # 档位权重
+  window_size: 1200  # Z-score计算窗口
+  buy_threshold: 2.0  # 买入OFI阈值
+  sell_threshold: -2.0  # 卖出OFI阈值
+
+# 数据存储配置
+data:
+  save_interval: 60  # 数据保存间隔（秒）
+  max_history_days: 7  # 最大历史数据保留天数
+
