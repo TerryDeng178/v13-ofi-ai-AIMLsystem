@@ -76,7 +76,7 @@ class BinanceOrderBookStream:
         self.depth_levels = depth_levels
         self.print_interval = max(5, int(print_interval))
         self.ws: Optional[websocket.WebSocketApp] = None
-        self.ws_url = f"wss://fstream.binance.com/stream?streams={self.symbol}@depth@100ms"
+        self.ws_url = f"wss://fstream.binancefuture.com/stream?streams={self.symbol}@depth@100ms"
         self.rest_snap_url = f"https://fapi.binance.com/fapi/v1/depth?symbol={self.symbol.upper()}&limit=1000"
 
         # Paths
