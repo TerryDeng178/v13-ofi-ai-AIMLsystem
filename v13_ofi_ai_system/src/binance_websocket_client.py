@@ -200,24 +200,10 @@ class BinanceOrderBookStream:
                 # Apply this event as the first applied
                 batch_span = int(u) - int(U) + 1
                 self._record_stats(latency_event_ms, time.perf_counter()-t0, batch_span)
-                
-                # Persist NDJSON for first aligned event
-                self._write_ndjson({
-                    "timestamp": datetime.utcfromtimestamp(E/1000).isoformat(),
-                    "symbol": self.symbol.upper(),
-                    "ts_recv": float(ts_recv),
-                    "E": int(E),
-                    "U": int(U),
-                    "u": int(u),
-                    "pu": int(pu) if pu is not None else None,
-                    "latency_event_ms": round(latency_event_ms, 3),
-                    "latency_pipeline_ms": round((time.perf_counter()-t0)*1000.0, 3),
-                })
-                
                 self._maybe_emit(ts_recv)
             else:
                 # discard until alignment satisfied
-                pass
+                return
             return
 
         # Subsequent continuity check: require pu == last_u
@@ -291,30 +277,37 @@ class BinanceOrderBookStream:
         }
 
     def print_statistics(self):
-        """SUMMARY line, 10s interval"""
+        """SUMMARY line every ~10s (console + logger use the SAME line)."""
         elapsed = (datetime.now() - self.stats['start_time']).total_seconds()
         if elapsed <= 0:
             return
+
         rate = self.stats['total_messages'] / elapsed if elapsed > 0 else 0.0
-        pc = self.calculate_percentiles() if len(self.stats['latency_list']) else {'p50':0,'p95':0,'p99':0}
+        pc = self.calculate_percentiles() if len(self.stats['latency_list']) else {'p50': 0, 'p95': 0, 'p99': 0}
 
-        bs_list = list(self.stats['batch_span_list'])
-        lq_list = list(self.stats['log_queue_depth_list'])
-        bs_p95 = round(percentile(bs_list, 95), 0) if bs_list else 0
-        lq_p95 = round(percentile(lq_list, 95), 0) if lq_list else 0
+        bs_list = list(self.stats.get('batch_span_list', []))
+        lq_list = list(self.stats.get('log_queue_depth_list', []))
 
-        print(
-            f"\nSUMMARY | t={elapsed:.0f}s | msgs={self.stats['total_messages']} | "
+        def _p95(arr):
+            if not arr:
+                return 0.0
+            arr = sorted(arr)
+            idx = max(0, int(round(0.95 * (len(arr) - 1))))
+            return float(arr[idx])
+
+        bs_p95 = _p95(bs_list)
+        lq_p95 = _p95(lq_list)
+
+        summary_line = (
+            f"SUMMARY | t={elapsed:.0f}s | msgs={self.stats['total_messages']} | "
             f"rate={rate:.2f}/s | p50={pc['p50']:.1f} p95={pc['p95']:.1f} p99={pc['p99']:.1f} | "
-            f"breaks={0} resyncs={self.stats['resyncs']} reconnects={self.stats['reconnects']} | "
-            f"batch_span_p95={bs_p95:.0f} max={self.stats['batch_span_max']} | "
-            f"log_q_p95={lq_p95:.0f} max={self.stats['log_queue_max_depth']} drops={self.stats['log_drops']}"
+            f"breaks={0} resyncs={self.stats.get('resyncs', 0)} reconnects={self.stats.get('reconnects', 0)} | "
+            f"batch_span_p95={bs_p95:.0f} max={self.stats.get('batch_span_max', 0)} | "
+            f"log_q_p95={lq_p95:.0f} max={self.stats.get('log_queue_max_depth', 0)} drops={self.stats.get('log_drops', 0)}"
         )
-        self.logger.info(
-            f"SUMMARY: runtime={elapsed:.0f}s, msgs={self.stats['total_messages']}, "
-            f"rate={rate:.2f}/s, p95={pc['p95']:.1f}ms, resyncs={self.stats['resyncs']}, "
-            f"log_drops={self.stats['log_drops']}"
-        )
+
+        print("\n" + summary_line)
+        self.logger.info(summary_line)
 
     def save_metrics_json(self):
         """Write metrics.json (10s cadence)"""
