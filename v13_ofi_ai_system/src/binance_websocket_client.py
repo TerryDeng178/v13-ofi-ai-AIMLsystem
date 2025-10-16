@@ -52,8 +52,9 @@ class BinanceOrderBookStream:
         self.depth_levels = depth_levels
         
         # 构建WebSocket URL
-        # 格式: wss://fstream.binance.com/ws/{symbol}@depth{levels}@100ms
-        self.ws_url = f"wss://fstream.binance.com/ws/{self.symbol}@depth{depth_levels}@100ms"
+        # 使用备用域名 binancefuture.com（测试验证可用）
+        # 格式: wss://fstream.binancefuture.com/ws/{symbol}@depth{levels}@100ms
+        self.ws_url = f"wss://fstream.binancefuture.com/ws/{self.symbol}@depth{depth_levels}@100ms"
         
         # 订单簿历史数据缓存（最多保存10000条）
         self.order_book_history = deque(maxlen=10000)
