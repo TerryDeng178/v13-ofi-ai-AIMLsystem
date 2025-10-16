@@ -294,18 +294,25 @@ class BinanceOrderBookStream:
             # 5. 递增序列号
             self.message_seq += 1
             
-            # 6. 提取更新ID字段（U, u）
-            U = data.get('U', 0)  # 第一个更新ID
+            # 6. 提取更新ID字段（U, u, pu）- 按Binance官方规范
+            U = data.get('U', 0)   # 第一个更新ID
             u = data.get('u', 0)   # 最后一个更新ID
+            pu = data.get('pu', None)  # Previous final update ID（币安官方字段）
             
             # 7. 计算batch_span（仅观测，不当错误）
             batch_span = u - U + 1
             self.stats['batch_span_sum'] += batch_span
             self.stats['batch_span_max'] = max(self.stats['batch_span_max'], batch_span)
             
-            # 8. 保存pu（用于NDJSON记录，不做连续性检测）
-            # 注意：币安WebSocket推送的是聚合数据，消息间可能有gaps，这是正常的
-            prev_update_id = self.last_update_id
+            # 8. 连续性检测：pu == last_u（按Binance官方规范）
+            if self.stats['last_u'] is not None and pu is not None:
+                if pu != self.stats['last_u']:
+                    # 触发resync - 连续性断裂
+                    self.stats['resyncs'] += 1
+                    logger.warning(f"⚠️ Resync触发! pu={pu}, last_u={self.stats['last_u']}, break={abs(pu - self.stats['last_u'])}")
+            
+            # 9. 更新last_u和prev_update_id
+            prev_update_id = self.last_update_id if self.last_update_id is not None else pu
             self.stats['last_u'] = u
             self.last_update_id = u
             
