@@ -47,8 +47,8 @@ def compute_profit_optimized_position_sizing(row: pd.Series, params: dict, signa
     """
     v8 盈利优化仓位管理 - 基于多维度评分动态调整仓位
     """
-    k = params["signals"]["sizing"]["k_ofi"]
-    size_max = params["signals"]["sizing"]["size_max_usd"]
+    k = params["sizing"]["k_ofi"]
+    size_max = params["sizing"]["size_max_usd"]
     
     # 基础仓位计算
     ofi_z = abs(row.get("ofi_z", 0.0))

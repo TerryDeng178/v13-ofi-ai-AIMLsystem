@@ -11,8 +11,8 @@ class TakeProfitLevel:
         self.description = description
 
 def position_size(row, params):
-    k = params["signals"]["sizing"]["k_ofi"]
-    size_max = params["signals"]["sizing"]["size_max_usd"]
+    k = params["sizing"]["k_ofi"]
+    size_max = params["sizing"]["size_max_usd"]
     # scale by ofi_z magnitude
     scale = min(1.0, max(0.1, abs(row.get("ofi_z", 0.0)) * k))
     notional = scale * size_max

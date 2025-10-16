@@ -1,0 +1,110 @@
+# Strategy parameters - v9 机器学习集成版
+# 目标：集成机器学习模型，提升信号预测准确性，实现实时监控
+data:
+  path: examples/sample_data.csv
+  tz: UTC
+
+risk:
+  max_trade_risk_pct: 0.01
+  daily_drawdown_stop_pct: 0.08
+  atr_stop_lo: 0.08              # 进一步收紧止损 (v8: 0.10)
+  atr_stop_hi: 2.0               # 进一步提高止盈 (v8: 1.5) -> 25:1盈亏比
+  min_tick_sl_mult: 2
+  time_exit_seconds_min: 30
+  time_exit_seconds_max: 300
+  slip_bps_budget_frac: 0.2      # 进一步收紧滑点预算 (v8: 0.3)
+  fee_bps: 0.3                  # 进一步降低手续费假设 (v8: 0.5)
+  time_tp_enabled: true
+  time_tp_vwap_seconds: 60
+  time_tp_15r_seconds: 120
+  time_tp_15r_multiplier: 2.0    # 提高止盈倍数 (v8: 1.5)
+
+features:
+  atr_window: 14
+  vwap_window_seconds: 1800
+  ofi_window_seconds: 2
+  ofi_levels: 5
+  z_window: 1200
+
+# 机器学习集成配置
+ml_integration:
+  enabled: true
+  model_type: "ensemble"  # ensemble, xgboost, lightgbm, neural_network
+  features:
+    - "ofi_z"
+    - "cvd_z"
+    - "ret_1s"
+    - "atr"
+    - "vwap"
+    - "bid1_size"
+    - "ask1_size"
+    - "spread_bps"
+  target: "signal_quality"
+  train_window: 1000
+  retrain_frequency: 100
+  model_save_path: "models/"
+  prediction_threshold: 0.7
+
+signals:
+  momentum:
+    ofi_z_min: 1.4               # 进一步降低阈值 (v8: 1.6)
+    cvd_z_min: 0.0
+    min_ret: 0.0
+    min_signal_strength: 1.8     # 适度降低强度要求 (v8: 2.0)
+    thin_book_spread_bps_max: 5.0 # 收紧spread要求 (v8: 6.0)
+    adaptive_thresholds: true    # 启用自适应阈值
+    quantile_window: 1200        # 缩短量化窗口 (v8: 1800)
+    momentum_quantile_hi: 0.65   # 降低动量分位数 (v8: 0.70)
+    momentum_quantile_lo: 0.35   # 提高动量分位数 (v8: 0.30)
+  ml_enhanced:
+    ofi_z_min: 1.4               # 进一步降低阈值 (v8: 1.6)
+    min_ret: 0.0
+    min_signal_strength: 1.8     # 适度降低强度要求 (v8: 2.0)
+    min_ml_prediction: 0.7       # ML模型预测阈值
+    thin_book_spread_bps_max: 5.0 # 收紧spread要求 (v8: 6.0)
+    adaptive_thresholds: true    # 启用自适应阈值
+    quantile_window: 1200        # 缩短量化窗口 (v8: 1800)
+    momentum_quantile_hi: 0.65   # 降低动量分位数 (v8: 0.70)
+    momentum_quantile_lo: 0.35   # 提高动量分位数 (v8: 0.30)
+  real_time_optimization:
+    enabled: true
+    update_frequency: 10         # 每10个bar更新一次
+    performance_window: 50       # 性能评估窗口
+    adaptation_rate: 0.1         # 自适应学习率
+    min_performance_threshold: 0.6 # 最小性能阈值
+
+entry:
+  use_limit_for_divergence: true
+sizing:
+  k_ofi: 0.6                     # 提高仓位倍数 (v8: 0.5)
+  size_max_usd: 200000           # 提高最大仓位 (v8: 150000)
+
+execution:
+  ioc: true
+  fok: false
+  slippage_budget_check: false
+  max_slippage_bps: 10.0          # 收紧滑点限制 (v8: 12.0)
+  session_window_minutes: 60
+  reject_on_budget_exceeded: false
+
+# 实时监控配置
+monitoring:
+  enabled: true
+  dashboard_update_frequency: 5   # 仪表板更新频率(秒)
+  alert_thresholds:
+    max_drawdown: 0.05           # 最大回撤告警阈值
+    min_win_rate: 0.8            # 最小胜率告警阈值
+    max_slippage: 15.0           # 最大滑点告警阈值
+  performance_metrics:
+    - "win_rate"
+    - "profit_factor"
+    - "sharpe_ratio"
+    - "max_drawdown"
+    - "cost_efficiency"
+    - "signal_quality"
+  real_time_alerts: true
+
+backtest:
+  initial_equity_usd: 100000
+  contract_multiplier: 1.0
+  seed: 42
