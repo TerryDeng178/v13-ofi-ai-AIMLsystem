@@ -1,0 +1,172 @@
+# V12 OFI+AI融合策略参数配置
+# 基于V9成熟参数 + 真实订单簿数据 + AI深度学习融合
+
+data:
+  path: examples/sample_data.csv
+  tz: UTC
+  # V12新增: 真实数据源配置
+  real_time_data:
+    enabled: true
+    websocket_url: "wss://fstream.binance.com/ws/ethusdt@depth20@100ms"
+    symbol: "ETHUSDT"
+    depth_levels: 5
+
+# V9继承的风险管理参数
+risk:
+  max_trade_risk_pct: 0.01       # 1% per trade
+  daily_drawdown_stop_pct: 0.08  # 8% stop
+  atr_stop_lo: 0.08              # V9: 进一步收紧止损
+  atr_stop_hi: 2.0               # V9: 进一步提高止盈 -> 25:1盈亏比
+  min_tick_sl_mult: 2            # V9: 最小tick止损倍数
+  time_exit_seconds_min: 30      # V9: 最小持仓时间
+  time_exit_seconds_max: 300     # V9: 最大持仓时间
+  slip_bps_budget_frac: 0.2      # V9: 滑点预算比例
+  fee_bps: 0.3                   # V9: 手续费假设
+  time_tp_enabled: true
+  time_tp_vwap_seconds: 60       # V9: VWAP止盈时间
+  time_tp_15r_seconds: 120       # V9: 1.5R止盈时间
+  time_tp_15r_multiplier: 2.0    # V9: 止盈倍数
+
+# V9继承的特征工程参数
+features:
+  atr_window: 14
+  vwap_window_seconds: 1800      # 30分钟VWAP
+  ofi_window_seconds: 2          # V9: 2秒OFI滚动窗口
+  ofi_levels: 5                  # V9: 5档深度
+  z_window: 1200                 # V9: 20分钟Z-score窗口
+
+# V12 OFI+AI融合配置
+ofi_ai_fusion:
+  enabled: true
+  
+  # OFI计算配置 (基于V9)
+  ofi_calculation:
+    levels: 5                    # V9: 5档深度
+    window_seconds: 2            # V9: 2秒滚动窗口
+    z_window: 1200              # V9: 20分钟Z-score窗口
+    weights: [1.0, 0.5, 0.33, 0.25, 0.2]  # V9权重配置
+  
+  # AI模型配置
+  ai_models:
+    v9_ml_weight: 0.5           # V9机器学习模型权重
+    lstm_weight: 0.2            # LSTM模型权重
+    transformer_weight: 0.2     # Transformer模型权重
+    cnn_weight: 0.1             # CNN模型权重
+  
+  # 深度学习配置
+  deep_learning:
+    lstm:
+      hidden_size: 128
+      num_layers: 3
+      dropout: 0.2
+      sequence_length: 60
+    transformer:
+      d_model: 128
+      nhead: 8
+      num_layers: 6
+      dropout: 0.1
+    cnn:
+      channels: [64, 128, 256]
+      kernel_sizes: [3, 3, 3]
+      dropout: 0.2
+
+# V9继承的信号生成参数
+signals:
+  # V9动量信号参数
+  momentum:
+    ofi_z_min: 1.4              # V9: OFI阈值
+    cvd_z_min: 0.6              # V9: CVD阈值
+    min_ret: 0.0
+    min_signal_strength: 1.8    # V9: 信号强度要求
+    thin_book_spread_bps_max: 5.0  # V9: 价差要求
+    adaptive_thresholds: true
+    quantile_window: 1200       # V9: 量化窗口
+    momentum_quantile_hi: 0.65  # V9: 动量分位数
+    momentum_quantile_lo: 0.35  # V9: 动量分位数
+  
+  # V12 AI增强信号参数
+  ai_enhanced:
+    ofi_z_min: 1.4              # 继承V9 OFI阈值
+    min_signal_strength: 1.8    # 继承V9信号强度
+    min_ai_prediction: 0.7      # AI预测阈值
+    high_freq_threshold: 1.2    # V12新增: 高频交易阈值
+    min_trade_interval: 10      # V12新增: 最小交易间隔(ms)
+    max_daily_trades: 200       # V12新增: 每日最大交易数
+  
+  # V12实时优化配置
+  real_time_optimization:
+    enabled: true
+    update_frequency: 10        # 每10个bar更新
+    performance_window: 50      # 性能评估窗口
+    adaptation_rate: 0.1        # 自适应学习率
+    min_performance_threshold: 0.6
+
+# V12高频交易配置
+high_frequency:
+  enabled: true
+  execution_delay_ms: 50        # 执行延迟目标
+  data_processing_ms: 10        # 数据处理延迟目标
+  signal_generation_ms: 20      # 信号生成延迟目标
+  max_concurrent_trades: 10     # 最大并发交易数
+  position_size_limit: 100000   # 单笔交易限额
+
+# V12实时学习配置
+online_learning:
+  enabled: true
+  retrain_frequency: 100        # 每100个样本重训练
+  learning_rate: 0.001          # 学习率
+  batch_size: 64               # 批次大小
+  validation_split: 0.2        # 验证集比例
+  early_stopping_patience: 10  # 早停耐心值
+
+# V9继承的仓位管理
+sizing:
+  k_ofi: 0.6                   # V9: 提高仓位倍数
+  size_max_usd: 200000         # V9: 提高最大仓位
+
+# V9继承的执行配置
+execution:
+  ioc: true
+  fok: false
+  slippage_budget_check: false
+  max_slippage_bps: 10.0       # V9: 收紧滑点限制
+  session_window_minutes: 60
+  reject_on_budget_exceeded: false
+
+# V12实时监控配置
+monitoring:
+  enabled: true
+  dashboard_update_frequency: 5   # 仪表板更新频率(秒)
+  alert_thresholds:
+    max_drawdown: 0.04           # 最大回撤告警阈值 (V12目标)
+    min_win_rate: 0.65           # 最小胜率告警阈值 (V12目标)
+    max_slippage: 15.0           # 最大滑点告警阈值
+    min_daily_trades: 100        # 最小日交易数告警 (V12目标)
+  performance_metrics:
+    - "win_rate"
+    - "profit_factor"
+    - "sharpe_ratio"
+    - "max_drawdown"
+    - "cost_efficiency"
+    - "signal_quality"
+    - "daily_trade_count"
+    - "ai_prediction_accuracy"
+  real_time_alerts: true
+
+# V12性能目标
+performance_targets:
+  daily_trades: 100             # V12目标: 每日100+笔交易
+  win_rate: 0.65               # V12目标: 胜率65%+
+  annual_return: 0.60          # V12目标: 年化收益60%+
+  sharpe_ratio: 45             # V12目标: 夏普比率45+
+  max_drawdown: 0.04           # V12目标: 最大回撤<4%
+  information_ratio: 2.0       # V12目标: 信息比率2.0+
+
+backtest:
+  initial_equity_usd: 100000
+  contract_multiplier: 1.0
+  seed: 42
+  # V12新增: 真实数据回测配置
+  use_real_data: true
+  data_source: "binance_websocket"
+  backtest_period_days: 30     # 回测周期
