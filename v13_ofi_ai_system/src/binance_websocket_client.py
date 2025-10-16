@@ -89,11 +89,12 @@ class BinanceOrderBookStream:
             'latency_list': [],
             'last_print_time': datetime.now(),
             'last_metrics_time': datetime.now(),
-            # 序列一致性统计
-            'gaps': 0,  # 序列跳跃次数
-            'max_gap': 0,  # 最大跳跃
+            # 序列一致性统计（期货WS严格对齐）
+            'gaps': 0,  # 连续区间内的缺口计数（区间内u-U-1的累计）
+            'max_gap': 0,  # 单次最大缺口
+            'resync': 0,  # resync次数（pu != last_u）
             'reconnects': 0,  # 重连次数
-            'last_seq_u': None,  # 上一次的u值
+            'last_u': None,  # 上一次的u值（用于pu对齐检查）
         }
         
         # 配置增强日志系统
@@ -214,11 +215,12 @@ class BinanceOrderBookStream:
             print(f"📉 最小时延: {min(self.stats['latency_list']):.2f}ms")
             print(f"📈 最大时延: {max(self.stats['latency_list']):.2f}ms")
         
-        # 序列一致性统计（硬标准3）
-        print(f"🔗 序列一致性:")
-        print(f"   - Gaps (跳跃): {self.stats['gaps']} 次")
-        print(f"   - Max Gap: {self.stats['max_gap']}")
-        print(f"   - Reconnects: {self.stats['reconnects']} 次")
+        # 序列一致性统计（硬标准3 - 期货WS严格对齐）
+        print(f"🔗 序列一致性 (期货WS严格对齐):")
+        print(f"   - Gaps (区间缺口): {self.stats['gaps']} 个updateId")
+        print(f"   - Max Gap (最大区间): {self.stats['max_gap']} 个updateId")
+        print(f"   - Resync (对齐中断): {self.stats['resync']} 次")
+        print(f"   - Reconnects (重连): {self.stats['reconnects']} 次")
         
         print(f"💾 缓存数据: {len(self.order_book_history)} 条")
         print("=" * 80)
@@ -294,22 +296,36 @@ class BinanceOrderBookStream:
             self.message_seq += 1
             
             # 6. 提取更新ID字段（U, u）
-            update_id_first = data.get('U', 0)  # 第一个更新ID
-            update_id_last = data.get('u', 0)   # 最后一个更新ID
-            prev_update_id = self.last_update_id  # 上一个更新ID（pu）
+            U = data.get('U', 0)  # 第一个更新ID
+            u = data.get('u', 0)   # 最后一个更新ID
+            pu = data.get('pu', None)  # 消息自带的pu（实际不存在，这里用last_u模拟）
             
-            # 7. 检测序列一致性（gaps检测）
-            if self.stats['last_seq_u'] is not None:
-                expected_U = self.stats['last_seq_u'] + 1
-                if update_id_first != expected_U:
-                    gap = update_id_first - expected_U
-                    self.stats['gaps'] += 1
-                    self.stats['max_gap'] = max(self.stats['max_gap'], gap)
-                    logger.warning(f"⚠️ 序列跳跃detected! Gap={gap}, Expected U={expected_U}, Actual U={update_id_first}")
+            # 7. 期货WS严格对齐检测（pu == last_u 连续性）
+            if self.stats['last_u'] is not None:
+                # 检查连续性：pu应该等于last_u
+                if pu is None:
+                    # 币安实际不发送pu，需要自己检测 U == last_u + 1
+                    pu_expected = self.stats['last_u']
+                    if U != pu_expected + 1:
+                        # 触发resync
+                        self.stats['resync'] += 1
+                        logger.warning(f"⚠️ Resync触发! last_u={self.stats['last_u']}, U={U}, gap={U - self.stats['last_u'] - 1}")
             
-            # 更新last_seq_u
-            self.stats['last_seq_u'] = update_id_last
-            self.last_update_id = update_id_last
+            # 8. 计算连续区间内的缺口（u - U + 1 = 实际更新数，理想应该连续）
+            # 如果区间内有缺口，说明某些updateId被跳过
+            interval_updates = u - U + 1  # 区间包含的更新ID数量
+            # 实际上每个消息都是聚合的，不一定连续，但我们统计区间内理论缺口
+            if interval_updates > 1:
+                # 区间内的缺口 = (u - U) - 聚合数 + 1，这里简化为 u - U（因为理想连续时u-U=0）
+                interval_gap = u - U  # 区间跨度（0表示单个更新，>0表示有缺口）
+                if interval_gap > 0:
+                    self.stats['gaps'] += interval_gap
+                    self.stats['max_gap'] = max(self.stats['max_gap'], interval_gap)
+            
+            # 更新last_u和pu
+            self.stats['last_u'] = u
+            prev_update_id = self.last_update_id
+            self.last_update_id = u
             
             # 5. 提取买单（bids）- 5档
             bids = []
@@ -343,9 +359,9 @@ class BinanceOrderBookStream:
                 # 新增完整字段
                 'ts_recv': ts_recv,  # 接收时间戳（毫秒）
                 'E': timestamp_ms,  # 事件时间（保留原字段名）
-                'U': update_id_first,  # 第一个更新ID
-                'u': update_id_last,  # 最后一个更新ID
-                'pu': prev_update_id,  # 上一个更新ID
+                'U': U,  # 第一个更新ID
+                'u': u,  # 最后一个更新ID
+                'pu': prev_update_id,  # 上一个更新ID（实际是上一条消息的u）
                 'latency_event_ms': round(latency_event_ms, 2),  # 事件时延
                 'latency_pipeline_ms': round(latency_pipeline_ms, 2),  # 管道时延
                 # 保留兼容字段
@@ -495,6 +511,7 @@ class BinanceOrderBookStream:
                 'sequence_consistency': {
                     'gaps': self.stats['gaps'],
                     'max_gap': self.stats['max_gap'],
+                    'resync': self.stats['resync'],
                     'reconnects': self.stats['reconnects']
                 },
                 'cache_size': len(self.order_book_history),
