@@ -1,0 +1,65 @@
+# Strategy parameters (defaults tuned for 1s data)
+data:
+  path: examples/sample_data.csv
+  tz: UTC
+
+risk:
+  max_trade_risk_pct: 0.01       # 1% per trade
+  daily_drawdown_stop_pct: 0.08  # 8% stop
+  atr_stop_lo: 0.6               # v4 收紧: 从1.1降至0.6
+  atr_stop_hi: 1.0               # v4 降低: 从1.6降至1.0
+  min_tick_sl_mult: 6            # v3: 最小tick止损倍数
+  time_exit_seconds_min: 120     # 2 minutes
+  time_exit_seconds_max: 900     # 15 minutes
+  slip_bps_budget_frac: 0.25     # slip <= 1/4 of expected reward
+  fee_bps: 2.0                   # 2 bps per notional per fill
+  # Time-based take profit levels
+  time_tp_enabled: true          # Enable time-based take profit
+  time_tp_vwap_seconds: 300      # First TP at VWAP after 5 minutes
+  time_tp_15r_seconds: 600       # Second TP at 1.5R after 10 minutes
+  time_tp_15r_multiplier: 1.5    # 1.5R multiplier for second TP
+
+features:
+  atr_window: 14
+  vwap_window_seconds: 1800      # 30 minutes rolling VWAP
+  ofi_window_seconds: 2
+  ofi_levels: 5                  # Number of levels for multi-level OFI
+  z_window: 1200                 # v3: 20 minutes z-score window
+
+signals:
+  momentum:
+    ofi_z_min: 1.0               # v4 大幅降低: 从2.1降至1.0
+    cvd_z_min: 0.6               # v4 大幅降低: 从1.4降至0.6
+    min_ret: 0.0
+    min_signal_strength: 1.5      # v4 新增: 信号强度要求
+    thin_book_spread_bps_max: 2.5  # v4 进一步放宽: 从1.4增至2.5
+    # Adaptive thresholds using quantiles
+    adaptive_thresholds: true
+    quantile_window: 5400          # v3: 1.5 hour lookback
+    momentum_quantile_hi: 0.85     # v3: 85th percentile
+    momentum_quantile_lo: 0.15     # v3: 15th percentile
+  divergence:
+    cvd_z_max: 0.0
+    ofi_z_max: 0.0
+    reclaim_bars: 1              # v3: 破位后一根回内侧
+    divergence_quantile_hi: 0.75   # v3: 75th percentile
+    divergence_quantile_lo: 0.25   # v3: 25th percentile
+  entry:
+    use_limit_for_divergence: true
+  sizing:
+    k_ofi: 0.20                   # v4 提升: 从0.10增至0.20
+    size_max_usd: 80000           # v4 提升: 从50000增至80000
+
+execution:
+  ioc: true
+  fok: false
+  slippage_budget_check: true      # Enable slippage budget checking
+  max_slippage_bps: 12.0           # v4 放宽: 从7.0增至12.0
+  session_window_minutes: 30       # v4 放宽: 从15增至30
+  reject_on_budget_exceeded: true  # Reject orders when budget exceeded
+
+backtest:
+  initial_equity_usd: 100000
+  contract_multiplier: 1.0
+  seed: 42
+

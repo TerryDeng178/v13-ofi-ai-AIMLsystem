@@ -1,0 +1,64 @@
+# Strategy parameters - v7 超优化版
+# 目标：1:10盈亏比，信号质量筛选，动态仓位管理
+data:
+  path: examples/sample_data.csv
+  tz: UTC
+
+risk:
+  max_trade_risk_pct: 0.01
+  daily_drawdown_stop_pct: 0.08
+  atr_stop_lo: 0.12              # 进一步收紧止损 (v6: 0.15)
+  atr_stop_hi: 1.2               # 进一步提高止盈 (v6: 1.0) -> 10:1盈亏比
+  min_tick_sl_mult: 2
+  time_exit_seconds_min: 30
+  time_exit_seconds_max: 300
+  slip_bps_budget_frac: 0.4      # 进一步收紧滑点预算
+  fee_bps: 0.8                   # 降低手续费假设
+  time_tp_enabled: true
+  time_tp_vwap_seconds: 60
+  time_tp_15r_seconds: 120
+  time_tp_15r_multiplier: 1.3    # 提高止盈倍数
+
+features:
+  atr_window: 14
+  vwap_window_seconds: 1800
+  ofi_window_seconds: 2
+  ofi_levels: 5
+  z_window: 1200
+
+signals:
+  momentum:
+    ofi_z_min: 1.8               # 提高OFI阈值，只要最强信号
+    cvd_z_min: 0.0
+    min_ret: 0.0
+    min_signal_strength: 2.5     # 信号质量筛选：只选择强度>=2.5的信号
+    price_momentum_threshold: 0.00002
+    thin_book_spread_bps_max: 8.0    # 收紧spread要求
+    adaptive_thresholds: false
+    quantile_window: 1800
+    momentum_quantile_hi: 0.70
+    momentum_quantile_lo: 0.30
+  divergence:
+    cvd_z_max: 0.0
+    ofi_z_max: 0.0
+    reclaim_bars: 1
+    divergence_quantile_hi: 0.60
+    divergence_quantile_lo: 0.40
+  entry:
+    use_limit_for_divergence: true
+  sizing:
+    k_ofi: 0.4                   # 提高仓位倍数
+    size_max_usd: 120000          # 适中的最大仓位
+
+execution:
+  ioc: true
+  fok: false
+  slippage_budget_check: false
+  max_slippage_bps: 15.0          # 收紧滑点限制
+  session_window_minutes: 60
+  reject_on_budget_exceeded: false
+
+backtest:
+  initial_equity_usd: 100000
+  contract_multiplier: 1.0
+  seed: 42

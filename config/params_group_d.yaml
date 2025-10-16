@@ -1,0 +1,61 @@
+# Group D (Very Relaxed) Configuration for Testing
+data:
+  path: examples/sample_data.csv
+  tz: UTC
+
+risk:
+  max_trade_risk_pct: 0.01
+  daily_drawdown_stop_pct: 0.08
+  atr_stop_lo: 0.8
+  atr_stop_hi: 1.2
+  min_tick_sl_mult: 4
+  time_exit_seconds_min: 120
+  time_exit_seconds_max: 900
+  slip_bps_budget_frac: 0.25
+  fee_bps: 2.0
+  time_tp_enabled: true
+  time_tp_vwap_seconds: 300
+  time_tp_15r_seconds: 600
+  time_tp_15r_multiplier: 1.5
+
+features:
+  atr_window: 14
+  z_window: 900
+  ofi_window_seconds: 2
+  vwap_window_seconds: 1800
+  ofi_levels: 5
+
+signals:
+  momentum:
+    ofi_z_min: 1.5              # Group D: 非常宽松
+    cvd_z_min: 1.0              # Group D: 非常宽松
+    min_ret: 0.0
+    thin_book_spread_bps_max: 2.0  # Group D: 非常宽松
+    adaptive_thresholds: true
+    quantile_window: 3600
+    momentum_quantile_hi: 0.75
+    momentum_quantile_lo: 0.25
+  divergence:
+    cvd_z_max: 0.0
+    ofi_z_max: 0.0
+    reclaim_bars: 1
+    divergence_quantile_hi: 0.70
+    divergence_quantile_lo: 0.30
+  entry:
+    use_limit_for_divergence: true
+  sizing:
+    k_ofi: 0.15
+    size_max_usd: 80000
+
+execution:
+  ioc: true
+  fok: false
+  slippage_budget_check: true
+  max_slippage_bps: 10.0         # Group D: 非常宽松
+  reject_on_budget_exceeded: true
+  session_window_minutes: 15
+
+backtest:
+  initial_equity_usd: 100000
+  contract_multiplier: 1.0
+  seed: 42

@@ -1,0 +1,65 @@
+# Strategy parameters - v5 动量突破版
+# 基于价格突破 + OFI确认
+data:
+  path: examples/sample_data.csv
+  tz: UTC
+
+risk:
+  max_trade_risk_pct: 0.01
+  daily_drawdown_stop_pct: 0.08
+  atr_stop_lo: 0.4               # 突破需要中等止损
+  atr_stop_hi: 1.6               # 4:1盈亏比
+  min_tick_sl_mult: 3            # 最小tick止损
+  time_exit_seconds_min: 45      # 中等持仓时间
+  time_exit_seconds_max: 450     # 最大持仓时间
+  slip_bps_budget_frac: 0.35     # 滑点预算
+  fee_bps: 1.2                   # 手续费假设
+  time_tp_enabled: true
+  time_tp_vwap_seconds: 90
+  time_tp_15r_seconds: 180
+  time_tp_15r_multiplier: 1.2
+
+features:
+  atr_window: 14
+  vwap_window_seconds: 1800
+  ofi_window_seconds: 2
+  ofi_levels: 5
+  z_window: 1200
+
+signals:
+  momentum:
+    ofi_z_min: 0.5               # 突破确认阈值
+    cvd_z_min: 0.0               # 不使用CVD
+    min_ret: 0.0                 # 不要求价格动量
+    min_signal_strength: 0.0     # 不要求信号强度
+    price_break_threshold: 0.0001  # 0.01%价格突破阈值
+    thin_book_spread_bps_max: 6.0   # 中等spread
+    adaptive_thresholds: false   # 关闭自适应阈值
+    quantile_window: 1800
+    momentum_quantile_hi: 0.70
+    momentum_quantile_lo: 0.30
+  divergence:
+    cvd_z_max: 0.0
+    ofi_z_max: 0.0
+    reclaim_bars: 1
+    divergence_quantile_hi: 0.60
+    divergence_quantile_lo: 0.40
+  entry:
+    use_limit_for_divergence: true
+  sizing:
+    k_ofi: 0.35                   # 中等高仓位
+    size_max_usd: 130000          # 中等高最大仓位
+
+execution:
+  ioc: true
+  fok: false
+  slippage_budget_check: false    # 关闭滑点检查
+  max_slippage_bps: 18.0
+  session_window_minutes: 60      # 宽松会话窗
+  reject_on_budget_exceeded: false  # 不拒单
+
+backtest:
+  initial_equity_usd: 100000
+  contract_multiplier: 1.0
+  contract_multiplier: 1.0
+  seed: 42

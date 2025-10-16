@@ -1,0 +1,64 @@
+# Strategy parameters - v6 渐进式优化版
+# 在v5成功基础上渐进改进
+data:
+  path: examples/sample_data.csv
+  tz: UTC
+
+risk:
+  max_trade_risk_pct: 0.01
+  daily_drawdown_stop_pct: 0.08
+  atr_stop_lo: 0.18              # 渐进收紧：从v5的0.2到0.18
+  atr_stop_hi: 0.95              # 渐进提高：从v5的0.8到0.95 (5.3:1盈亏比)
+  min_tick_sl_mult: 2
+  time_exit_seconds_min: 35      # 渐进增加：从v5的30秒到35秒
+  time_exit_seconds_max: 320     # 渐进增加：从v5的300秒到320秒
+  slip_bps_budget_frac: 0.45     # 渐进收紧：从v5的0.5到0.45
+  fee_bps: 1.0
+  time_tp_enabled: true
+  time_tp_vwap_seconds: 70       # 渐进调整
+  time_tp_15r_seconds: 140
+  time_tp_15r_multiplier: 1.25   # 渐进提高
+
+features:
+  atr_window: 14
+  vwap_window_seconds: 1800
+  ofi_window_seconds: 2
+  ofi_levels: 5
+  z_window: 1200
+
+signals:
+  momentum:
+    ofi_z_min: 1.6               # 渐进提高：从v5的1.5到1.6
+    cvd_z_min: 0.0               # 保持v5设置
+    min_ret: 0.0
+    min_signal_strength: 1.2     # 渐进增加：从无要求到1.2
+    price_momentum_threshold: 0.00001  # 渐进增加：从无要求到0.001%
+    thin_book_spread_bps_max: 8.0    # 渐进收紧：从v5的10.0到8.0
+    adaptive_thresholds: false
+    quantile_window: 1800
+    momentum_quantile_hi: 0.70
+    momentum_quantile_lo: 0.30
+  divergence:
+    cvd_z_max: 0.0
+    ofi_z_max: 0.0
+    reclaim_bars: 1
+    divergence_quantile_hi: 0.60
+    divergence_quantile_lo: 0.40
+  entry:
+    use_limit_for_divergence: true
+  sizing:
+    k_ofi: 0.38                   # 渐进提高：从v5的0.35到0.38
+    size_max_usd: 135000          # 渐进提高：从v5的130000到135000
+
+execution:
+  ioc: true
+  fok: false
+  slippage_budget_check: false
+  max_slippage_bps: 22.0          # 渐进收紧：从v5的25.0到22.0
+  session_window_minutes: 60
+  reject_on_budget_exceeded: false
+
+backtest:
+  initial_equity_usd: 100000
+  contract_multiplier: 1.0
+  seed: 42

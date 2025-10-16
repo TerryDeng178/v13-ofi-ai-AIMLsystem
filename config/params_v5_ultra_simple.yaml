@@ -1,0 +1,63 @@
+# Strategy parameters - v5 超极简版
+# 基于数据质量诊断：所有信号收益都远低于手续费成本
+data:
+  path: examples/sample_data.csv
+  tz: UTC
+
+risk:
+  max_trade_risk_pct: 0.01
+  daily_drawdown_stop_pct: 0.08
+  atr_stop_lo: 0.2               # 极紧止损
+  atr_stop_hi: 0.8               # 4:1盈亏比
+  min_tick_sl_mult: 2            # 最小tick止损
+  time_exit_seconds_min: 30      # 最短持仓时间
+  time_exit_seconds_max: 300     # 短最大持仓时间
+  slip_bps_budget_frac: 0.5      # 宽松滑点预算
+  fee_bps: 1.0                   # 低手续费假设
+  time_tp_enabled: true
+  time_tp_vwap_seconds: 60
+  time_tp_15r_seconds: 120
+  time_tp_15r_multiplier: 1.1
+
+features:
+  atr_window: 14
+  vwap_window_seconds: 1800
+  ofi_window_seconds: 2
+  ofi_levels: 5
+  z_window: 1200
+
+signals:
+  momentum:
+    ofi_z_min: 1.5               # 高阈值，只要最强信号
+    cvd_z_min: 0.0               # 不使用CVD
+    min_ret: 0.0                 # 不要求价格动量
+    min_signal_strength: 0.0     # 不要求信号强度
+    thin_book_spread_bps_max: 10.0  # 极宽松spread
+    adaptive_thresholds: false   # 关闭自适应阈值
+    quantile_window: 1800
+    momentum_quantile_hi: 0.70
+    momentum_quantile_lo: 0.30
+  divergence:
+    cvd_z_max: 0.0
+    ofi_z_max: 0.0
+    reclaim_bars: 1
+    divergence_quantile_hi: 0.60
+    divergence_quantile_lo: 0.40
+  entry:
+    use_limit_for_divergence: true
+  sizing:
+    k_ofi: 0.40                   # 高仓位
+    size_max_usd: 150000          # 高最大仓位
+
+execution:
+  ioc: true
+  fok: false
+  slippage_budget_check: false    # 关闭滑点检查
+  max_slippage_bps: 25.0
+  session_window_minutes: 60      # 极宽松会话窗
+  reject_on_budget_exceeded: false  # 不拒单
+
+backtest:
+  initial_equity_usd: 100000
+  contract_multiplier: 1.0
+  seed: 42
