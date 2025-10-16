@@ -206,8 +206,8 @@ class BinanceOrderBookStream:
                 return
             return
 
-        # Subsequent continuity check: require pu == last_u
-        if pu is None or self.last_u is None or int(pu) != int(self.last_u):
+        # Subsequent continuity check: if pu exists, require pu == last_u
+        if pu is not None and self.last_u is not None and int(pu) != int(self.last_u):
             self.logger.warning(f"Continuity break (pu={pu}, last_u={self.last_u}), resync...")
             self.stats["resyncs"] += 1
             # Resync: reload snapshot, wait for next aligned event
