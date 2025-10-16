@@ -200,10 +200,24 @@ class BinanceOrderBookStream:
                 # Apply this event as the first applied
                 batch_span = int(u) - int(U) + 1
                 self._record_stats(latency_event_ms, time.perf_counter()-t0, batch_span)
+                
+                # Persist NDJSON for first aligned event
+                self._write_ndjson({
+                    "timestamp": datetime.utcfromtimestamp(E/1000).isoformat(),
+                    "symbol": self.symbol.upper(),
+                    "ts_recv": float(ts_recv),
+                    "E": int(E),
+                    "U": int(U),
+                    "u": int(u),
+                    "pu": int(pu) if pu is not None else None,
+                    "latency_event_ms": round(latency_event_ms, 3),
+                    "latency_pipeline_ms": round((time.perf_counter()-t0)*1000.0, 3),
+                })
+                
                 self._maybe_emit(ts_recv)
             else:
                 # discard until alignment satisfied
-                return
+                pass
             return
 
         # Subsequent continuity check: if pu exists, require pu == last_u
