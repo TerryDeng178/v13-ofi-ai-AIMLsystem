@@ -69,8 +69,20 @@ class BinanceOrderBookStream:
         # 数据存储相关
         self.save_interval = 60  # 每60秒保存一次
         self.last_save_time = datetime.now()
+        
+        # 三层存储目录
         self.data_dir = Path("v13_ofi_ai_system/data/order_book")
-        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.ndjson_dir = self.data_dir / "ndjson"  # Layer 1: 原始流
+        self.parquet_dir = self.data_dir / "parquet"  # Layer 2: 分析存储
+        self.csv_dir = self.data_dir / "csv"  # Legacy: CSV备份
+        
+        self.ndjson_dir.mkdir(parents=True, exist_ok=True)
+        self.parquet_dir.mkdir(parents=True, exist_ok=True)
+        self.csv_dir.mkdir(parents=True, exist_ok=True)
+        
+        # 序列号和时延跟踪
+        self.message_seq = 0  # 消息序列号
+        self.last_order_book = None  # 上一个订单簿状态（用于增量检测）
         
         logger.info(f"BinanceOrderBookStream initialized for {symbol.upper()}")
         logger.info(f"WebSocket URL: {self.ws_url}")
@@ -142,9 +154,14 @@ class BinanceOrderBookStream:
                 logger.warning(f"消息缺少必需字段: {data.keys()}")
                 return
             
-            # 4. 提取时间戳（毫秒转datetime）
+            # 4. 计算接收时延
+            receive_time = datetime.now()
             timestamp_ms = data['E']
             timestamp = datetime.fromtimestamp(timestamp_ms / 1000.0)
+            latency_ms = (receive_time - timestamp).total_seconds() * 1000
+            
+            # 5. 递增序列号
+            self.message_seq += 1
             
             # 5. 提取买单（bids）- 5档
             bids = []
@@ -165,25 +182,32 @@ class BinanceOrderBookStream:
                 logger.warning(f"订单簿深度不足: bids={len(bids)}, asks={len(asks)}")
                 return
             
-            # 8. 构建订单簿数据结构
+            # 8. 构建订单簿数据结构（增强版 - 包含seq和latency）
             order_book = {
+                'seq': self.message_seq,  # 序列号
                 'timestamp': timestamp,
                 'symbol': self.symbol.upper(),
                 'bids': bids,
                 'asks': asks,
-                'event_time': timestamp_ms
+                'event_time': timestamp_ms,
+                'latency_ms': round(latency_ms, 2),  # 接收时延
+                'receive_time': receive_time  # 本地接收时间
             }
             
             # 9. 存储到历史记录
             self.order_book_history.append(order_book)
             
-            # 10. 定期打印统计信息
+            # 10. 实时写入NDJSON
+            self._write_to_ndjson(order_book)
+            
+            # 11. 定期打印统计信息
             current_count = len(self.order_book_history)
             if current_count % 100 == 0:  # 每100条打印一次
                 logger.info(f"已接收 {current_count} 条订单簿数据")
                 logger.debug(f"最新数据 - Bid1: {bids[0][0]:.2f}@{bids[0][1]:.4f}, "
                            f"Ask1: {asks[0][0]:.2f}@{asks[0][1]:.4f}, "
-                           f"Spread: {(asks[0][0] - bids[0][0]):.2f}")
+                           f"Spread: {(asks[0][0] - bids[0][0]):.2f}, "
+                           f"Latency: {latency_ms:.1f}ms")
                 
         except Exception as e:
             logger.error(f"处理消息时出错: {e}", exc_info=True)
@@ -249,6 +273,109 @@ class BinanceOrderBookStream:
             int: 订单簿数据数量
         """
         return len(self.order_book_history)
+    
+    def _write_to_ndjson(self, order_book):
+        """实时写入NDJSON文件（追加模式）
+        
+        Args:
+            order_book (dict): 订单簿数据
+            
+        Note:
+            NDJSON格式：每行一个JSON对象，便于流式处理和回放
+        """
+        try:
+            # 生成今天的文件名
+            date_str = datetime.now().strftime('%Y%m%d')
+            ndjson_file = self.ndjson_dir / f"{self.symbol}_{date_str}.ndjson"
+            
+            # 准备写入的数据（序列化datetime对象）
+            record = {
+                'seq': order_book['seq'],
+                'timestamp': order_book['timestamp'].isoformat(),
+                'event_time': order_book['event_time'],
+                'latency_ms': order_book['latency_ms'],
+                'symbol': order_book['symbol'],
+                'bids': order_book['bids'],
+                'asks': order_book['asks']
+            }
+            
+            # 追加写入（每行一个JSON）
+            with open(ndjson_file, 'a', encoding='utf-8') as f:
+                f.write(json.dumps(record, ensure_ascii=False) + '\n')
+                
+        except Exception as e:
+            logger.error(f"写入NDJSON失败: {e}", exc_info=True)
+    
+    def convert_ndjson_to_parquet(self, ndjson_file=None):
+        """将NDJSON文件转换为Parquet格式
+        
+        Args:
+            ndjson_file (Path): NDJSON文件路径，默认转换今天的文件
+            
+        Returns:
+            str: 生成的Parquet文件路径
+            
+        Note:
+            Parquet列式存储，压缩率高，查询快，适合OFI计算
+        """
+        try:
+            # 如果没有指定文件，使用今天的
+            if ndjson_file is None:
+                date_str = datetime.now().strftime('%Y%m%d')
+                ndjson_file = self.ndjson_dir / f"{self.symbol}_{date_str}.ndjson"
+            
+            if not ndjson_file.exists():
+                logger.warning(f"NDJSON文件不存在: {ndjson_file}")
+                return None
+            
+            # 读取NDJSON文件
+            records = []
+            with open(ndjson_file, 'r', encoding='utf-8') as f:
+                for line in f:
+                    if line.strip():
+                        record = json.loads(line)
+                        # 展平数据结构
+                        flat_record = {
+                            'seq': record['seq'],
+                            'timestamp': record['timestamp'],
+                            'event_time': record['event_time'],
+                            'latency_ms': record['latency_ms'],
+                            'symbol': record['symbol']
+                        }
+                        
+                        # 添加5档买单
+                        for i, (price, qty) in enumerate(record['bids'], 1):
+                            flat_record[f'bid_price_{i}'] = price
+                            flat_record[f'bid_qty_{i}'] = qty
+                        
+                        # 添加5档卖单
+                        for i, (price, qty) in enumerate(record['asks'], 1):
+                            flat_record[f'ask_price_{i}'] = price
+                            flat_record[f'ask_qty_{i}'] = qty
+                        
+                        records.append(flat_record)
+            
+            if not records:
+                logger.warning("NDJSON文件为空")
+                return None
+            
+            # 转换为DataFrame
+            df = pd.DataFrame(records)
+            df['timestamp'] = pd.to_datetime(df['timestamp'])
+            
+            # 生成Parquet文件名
+            date_str = datetime.now().strftime('%Y%m%d')
+            parquet_file = self.parquet_dir / f"{self.symbol}_{date_str}.parquet"
+            
+            # 保存为Parquet（使用snappy压缩）
+            df.to_parquet(parquet_file, engine='pyarrow', compression='snappy', index=False)
+            
+            logger.info(f"✅ NDJSON→Parquet转换成功: {parquet_file} ({len(df)} 条记录)")
+            return str(parquet_file)
+            
+        except Exception as e:
+            logger.error(f"NDJSON→Parquet转换失败: {e}", exc_info=True)
+            return None
     
     def save_to_csv(self, force=False):
         """保存订单簿数据到CSV文件
