@@ -143,9 +143,10 @@
    - 样本标准差（n-1）实现
    
 2. **Z-score标准化**:
-   - 集成在 `update_with_snapshot()` 中（第261-271行）
+   - 集成在 `update_with_snapshot()` 中（第258-284行）
    - Warmup机制保护冷启动
    - 数值稳定性检查
+   - **优化: "上一窗口"基线**（不包含当前OFI值）
    
 3. **测试验证**:
    - `test_z_score_calculation`: Z-score计算精度 ✓
@@ -153,5 +154,28 @@
    
 4. **Z-score公式**:
    - z_ofi = (ofi_val - mean(ofi_hist)) / std(ofi_hist)
+   - **基线窗口**: `ofi_hist`（不包含当前`ofi_val`）
    - 完全符合标准统计学定义
+
+## 🔄 优化记录（2025-10-17）
+
+### Z-score计算优化
+**问题**: 原始逻辑先 `append(ofi_val)` 再计算Z-score，导致当前值稀释自己的Z值，异常检测不够灵敏。
+
+**解决方案**:
+1. **调整计算顺序**: Z-score计算 → `append(ofi_val)`
+2. **基线窗口**: 使用 `arr = list(self.ofi_hist)` (不包含当前值)
+3. **新增标记**: `meta.std_zero = True` 当 `std <= 1e-9` 时
+4. **逻辑统一**: Warmup判断统一使用 `arr`
+
+**代码改动**:
+- 第265行: 统一获取 `arr = list(self.ofi_hist)`
+- 第270-272行: 添加 `std_zero` 标记
+- 第284行: `append(ofi_val)` 移至Z-score计算后
+- 第298行: 返回值新增 `std_zero` 字段
+
+**效果**:
+- ✅ 异常检测更灵敏（当前值不稀释基线）
+- ✅ 可观测性更强（`std_zero` 标记低波动期）
+- ✅ 逻辑更清晰（统一的窗口获取）
 

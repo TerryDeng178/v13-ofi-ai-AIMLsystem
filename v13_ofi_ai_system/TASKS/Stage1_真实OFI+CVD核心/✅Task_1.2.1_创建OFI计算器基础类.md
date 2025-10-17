@@ -101,20 +101,34 @@
 **是否可以继续下一个任务**: ✅ 是，可以继续Task_1.2.2
 
 ## 📦 交付物
-1. **源代码**: `v13_ofi_ai_system/src/real_ofi_calculator.py` (277行)
+1. **源代码**: `v13_ofi_ai_system/src/real_ofi_calculator.py` (314行)
    - `OFIConfig` 配置类
    - `RealOFICalculator` 计算器类
    - 完整注释和文档
    
-2. **测试代码**: `v13_ofi_ai_system/tests/test_real_ofi_calculator.py` (176行)
+2. **测试代码**: `v13_ofi_ai_system/tests/test_real_ofi_calculator.py` (183行)
    - 7个测试用例
    - 100%通过率
    
 3. **核心功能**:
    - ✅ 5档深度加权OFI计算
-   - ✅ Z-score标准化（滚动窗口300）
+   - ✅ Z-score标准化（滚动窗口300，**优化为"上一窗口"基线**）
    - ✅ EMA平滑（alpha=0.2）
    - ✅ Warmup期管理
    - ✅ 状态管理和重置
    - ✅ 坏数据点检测和处理
+   - ✅ **`std_zero` 标记（标准差为0时的显式标记）**
+
+## 🔄 代码优化记录
+
+### 优化1: Z-score计算优化（2025-10-17）
+**优化内容**:
+1. **"上一窗口"基线**: Z-score计算基于历史窗口（不包含当前OFI），避免当前值稀释自己的Z值
+2. **`std_zero` 标记**: 新增 `meta.std_zero` 字段，当标准差≤1e-9时显式标记，便于上层降权或告警
+3. **逻辑统一**: Warmup判断统一使用 `arr = list(self.ofi_hist)`，代码更清晰
+4. **写入时机**: `self.ofi_hist.append(ofi_val)` 移到Z-score计算后（第284行），确保"上一窗口"口径成立
+
+**代码位置**: 第258-284行
+**测试更新**: `test_z_score_calculation` 适配新逻辑，交替变化样本避免std=0
+**质量提升**: 异常检测更灵敏，可观测性更强
 
