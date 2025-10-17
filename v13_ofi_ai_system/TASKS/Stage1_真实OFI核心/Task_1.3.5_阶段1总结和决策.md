@@ -68,7 +68,7 @@
 - (记录经验)
 
 ## 🔗 相关链接
-- 上一个任务: [Task_1.3.4_生成OFI验证报告](./Task_1.3.4_生成OFI验证报告.md)
+- 上一个任务: [Task_1.3.4_生成OFI+CVD验证报告](./Task_1.3.4_生成OFI+CVD验证报告.md)
 - 下一个任务: [Task_2.1.1_创建测试网交易客户端](../Stage2_简单真实交易/Task_2.1.1_创建测试网交易客户端.md)
 - 阶段总览: [📋V13_TASK_CARD.md](../../📋V13_TASK_CARD.md)
 - 任务系统: [TASKS/README.md](../README.md)

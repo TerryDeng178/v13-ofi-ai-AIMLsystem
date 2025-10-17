@@ -70,7 +70,7 @@
 - (记录经验)
 
 ## 🔗 相关链接
-- 上一个任务: [Task_1.3.3_分析OFI预测能力](./Task_1.3.3_分析OFI预测能力.md)
+- 上一个任务: [Task_1.3.3_分析OFI+CVD预测能力](./Task_1.3.3_分析OFI+CVD预测能力.md)
 - 下一个任务: [Task_1.3.5_阶段1总结和决策](./Task_1.3.5_阶段1总结和决策.md)
 - 阶段总览: [📋V13_TASK_CARD.md](../../📋V13_TASK_CARD.md)
 - 任务系统: [TASKS/README.md](../README.md)
