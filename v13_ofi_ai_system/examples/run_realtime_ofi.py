@@ -122,6 +122,15 @@ def parse_message(msg: str) -> Optional[Tuple[List[Tuple[float,float]], List[Tup
 
 # === DEMO source: local synthetic orderbook ===
 async def demo_source(queue: asyncio.Queue, hz: int = 50):
+    """
+    Local synthetic order book generator
+    
+    Args:
+        queue: asyncio.Queue to put messages into
+        hz: Frequency in Hz (messages per second)
+            - Default: 50 Hz (50 msgs/s) - normal testing
+            - Can set to 100 Hz (100 msgs/s) - high load testing
+    """
     base_p = 100.0
     t = 0.0
     while True:
@@ -247,8 +256,9 @@ async def main(demo: bool = False):
     print(f"[INFO] OFI Calculator initialized: symbol={SYMBOL}, K={K_LEVELS}, z_window={Z_WINDOW}, ema_alpha={EMA_ALPHA}")
 
     if demo or not WS_URL:
-        prod = asyncio.create_task(demo_source(q))
-        print("[INFO] Running in DEMO mode (local synthetic orderbook, 50 Hz)")
+        demo_hz = 50  # Change to 100 for high-load testing (100 msgs/s)
+        prod = asyncio.create_task(demo_source(q, hz=demo_hz))
+        print(f"[INFO] Running in DEMO mode (local synthetic orderbook, {demo_hz} Hz = {demo_hz} msgs/s)")
     else:
         prod = asyncio.create_task(ws_consume(WS_URL, q, stop))
         print(f"[INFO] Connecting to real WebSocket: {WS_URL}")
