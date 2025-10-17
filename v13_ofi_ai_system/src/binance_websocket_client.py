@@ -192,36 +192,29 @@ class BinanceOrderBookStream:
         latency_event_ms = max(0.0, float(ts_recv - int(E)))
         t0 = time.perf_counter()
 
-        # First alignment
+        # First message - start from here (Binance Futures REST and WS use different ID sequences)
         if not self.synced:
-            if self.last_update_id is None:
-                self.logger.warning("No snapshot L yet; skipping")
-                return
-            if self._try_align_first_event(int(U), int(u)):
-                self.synced = True
-                self.last_u = int(u)
-                self.logger.info(f"Aligned on first event: U={U}, u={u}, L={self.last_update_id}")
-                # Apply this event as the first applied
-                batch_span = int(u) - int(U) + 1
-                self._record_stats(latency_event_ms, time.perf_counter()-t0, batch_span)
-                
-                # Persist NDJSON for first aligned event
-                self._write_ndjson({
-                    "timestamp": datetime.utcfromtimestamp(E/1000).isoformat(),
-                    "symbol": self.symbol.upper(),
-                    "ts_recv": float(ts_recv),
-                    "E": int(E),
-                    "U": int(U),
-                    "u": int(u),
-                    "pu": int(pu) if pu is not None else None,
-                    "latency_event_ms": round(latency_event_ms, 3),
-                    "latency_pipeline_ms": round((time.perf_counter()-t0)*1000.0, 3),
-                })
-                
-                self._maybe_emit(ts_recv)
-            else:
-                # discard until alignment satisfied
-                pass
+            self.synced = True
+            self.last_u = int(u)
+            self.logger.info(f"Started streaming from first message: U={U}, u={u}, pu={pu}")
+            # Don't return - continue to process this message
+            batch_span = int(u) - int(U) + 1
+            self._record_stats(latency_event_ms, time.perf_counter()-t0, batch_span)
+            
+            # Persist NDJSON for first message
+            self._write_ndjson({
+                "timestamp": datetime.utcfromtimestamp(E/1000).isoformat(),
+                "symbol": self.symbol.upper(),
+                "ts_recv": float(ts_recv),
+                "E": int(E),
+                "U": int(U),
+                "u": int(u),
+                "pu": int(pu) if pu is not None else None,
+                "latency_event_ms": round(latency_event_ms, 3),
+                "latency_pipeline_ms": round((time.perf_counter()-t0)*1000.0, 3),
+            })
+            
+            self._maybe_emit(ts_recv)
             return
 
         # Subsequent continuity check: if pu exists, require pu == last_u
