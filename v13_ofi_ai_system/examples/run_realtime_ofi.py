@@ -31,6 +31,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import List, Tuple, Optional, Dict
 from collections import defaultdict
+from pathlib import Path
+from datetime import datetime
 
 # === Import RealOFICalculator from project or local ===
 import sys
@@ -60,6 +62,15 @@ WS_URL = os.getenv("WS_URL", "")  # if empty -> demo mode
 Z_WINDOW = int(os.getenv("Z_WINDOW", "300"))
 EMA_ALPHA = float(os.getenv("EMA_ALPHA", "0.2"))
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+ENABLE_DATA_COLLECTION = os.getenv("ENABLE_DATA_COLLECTION", "").lower() in ("1", "true", "yes")
+DATA_OUTPUT_DIR = os.getenv("DATA_OUTPUT_DIR", "v13_ofi_ai_system/data")
+
+def _getenv_int(name: str, default: int) -> int:
+    """Helper to parse int from environment variable"""
+    try:
+        return int(os.getenv(name, str(default)))
+    except Exception:
+        return default
 
 # === Setup logging ===
 logging.basicConfig(
@@ -122,6 +133,80 @@ class RateLimiter:
             self.suppressed[key] += 1
             return False
 
+class DataCollector:
+    """Collect OFI data and save to Parquet periodically"""
+    def __init__(self, symbol: str, output_dir: str, flush_interval: int = 60):
+        self.symbol = symbol
+        self.output_dir = Path(output_dir) / symbol
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.flush_interval = flush_interval
+        self.data_buffer = []
+        self.last_flush = time.time()
+        self.total_collected = 0
+        self.reconnect_count = 0
+        self.queue_dropped_count = 0
+        
+        # Generate output filename
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M")
+        self.output_file = self.output_dir / f"{timestamp}.parquet"
+        logger.info(f"DataCollector initialized: output={self.output_file}")
+    
+    def add_record(self, ofi_result: dict, latency_ms: float, event_time_ms: Optional[int] = None):
+        """Add one OFI calculation result to buffer"""
+        # Extract k_components and calculate sum
+        k_comps = ofi_result.get("k_components", [])
+        k_components_sum = sum(k_comps) if k_comps else None
+        
+        record = {
+            "ts": time.time() * 1000,  # Local timestamp (UTC ms)
+            "event_time_ms": event_time_ms,
+            "ofi": ofi_result["ofi"],
+            "z_ofi": ofi_result.get("z_ofi"),
+            "ema_ofi": ofi_result["ema_ofi"],
+            "warmup": ofi_result.get("meta", {}).get("warmup", False),
+            "std_zero": ofi_result.get("meta", {}).get("std_zero", False),
+            "bad_points": ofi_result.get("meta", {}).get("bad_points", 0),
+            "queue_dropped": self.queue_dropped_count,
+            "reconnect_count": self.reconnect_count,
+            "latency_ms": latency_ms,
+            "k_components_sum": k_components_sum,
+        }
+        self.data_buffer.append(record)
+        self.total_collected += 1
+    
+    def should_flush(self) -> bool:
+        """Check if it's time to flush buffer to disk"""
+        return (time.time() - self.last_flush) >= self.flush_interval
+    
+    def flush(self):
+        """Save buffered data to Parquet file"""
+        if not self.data_buffer:
+            return
+        
+        try:
+            import pandas as pd
+            df = pd.DataFrame(self.data_buffer)
+            
+            # Append to existing file or create new
+            if self.output_file.exists():
+                df_existing = pd.read_parquet(self.output_file)
+                df = pd.concat([df_existing, df], ignore_index=True)
+            
+            df.to_parquet(self.output_file, index=False)
+            logger.info(f"Flushed {len(self.data_buffer)} records to {self.output_file.name} (total: {self.total_collected})")
+            self.data_buffer = []
+            self.last_flush = time.time()
+        except Exception as e:
+            logger.error(f"Failed to flush data: {e}", exc_info=True)
+    
+    def increment_reconnect(self):
+        """Increment reconnect counter"""
+        self.reconnect_count += 1
+    
+    def increment_queue_dropped(self, count: int = 1):
+        """Increment queue dropped counter"""
+        self.queue_dropped_count += count
+
 def topk_pad(levels: List[Tuple[float,float]], k: int, reverse: bool) -> List[Tuple[float,float]]:
     lv = []
     for x in levels:
@@ -167,7 +252,7 @@ def parse_message(msg: str) -> Optional[Tuple[List[Tuple[float,float]], List[Tup
 # === DEMO source: local synthetic orderbook ===
 async def demo_source(queue: asyncio.Queue, hz: int = 50):
     """
-    Local synthetic order book generator
+    高精度 DEMO 源：使用 monotonic 时间对齐每一拍，避免 sleep 漂移导致速率下降。
     
     Args:
         queue: asyncio.Queue to put messages into
@@ -175,19 +260,32 @@ async def demo_source(queue: asyncio.Queue, hz: int = 50):
             - Default: 50 Hz (50 msgs/s) - normal testing
             - Can set to 100 Hz (100 msgs/s) - high load testing
     """
+    period = 1.0 / float(hz)
+    loop = asyncio.get_running_loop()
+    next_t = loop.time()
     base_p = 100.0
     t = 0.0
     while True:
-        t += 1.0/hz
+        # 生成一帧
+        t += period
         mid = base_p + 0.5*math.sin(t/3.0)
         spread = 0.02
         bids = [[mid - i*spread, max(0.0, 10 + 3*math.sin(t+i) + random.uniform(-1,1))] for i in range(K_LEVELS)]
         asks = [[mid + i*spread, max(0.0, 10 + 3*math.cos(t+i) + random.uniform(-1,1))] for i in range(K_LEVELS)]
         await queue.put(json.dumps({"bids": bids, "asks": asks}))
-        await asyncio.sleep(1.0/hz)
+        
+        # 对齐下一拍；若落后则跳过若干周期追平
+        next_t += period
+        delay = next_t - loop.time()
+        if delay > 0:
+            await asyncio.sleep(delay)
+        else:
+            # 若系统落后，跳过落后的周期数以追平时间
+            missed = int(-delay // period) + 1
+            next_t += missed * period
 
 # === WebSocket consumer ===
-async def ws_consume(url: str, queue: asyncio.Queue, stop: asyncio.Event):
+async def ws_consume(url: str, queue: asyncio.Queue, stop: asyncio.Event, collector: Optional['DataCollector'] = None):
     try:
         import websockets  # external lightweight dependency
     except ModuleNotFoundError:
@@ -204,6 +302,8 @@ async def ws_consume(url: str, queue: asyncio.Queue, stop: asyncio.Event):
                 backoff = 1
                 if reconnect_count > 0:
                     logger.info(f"Reconnected successfully after {reconnect_count} attempts")
+                    if collector:
+                        collector.increment_reconnect()
                 reconnect_count = 0
                 # TODO: send subscription if needed
                 while not stop.is_set():
@@ -224,7 +324,7 @@ async def ws_consume(url: str, queue: asyncio.Queue, stop: asyncio.Event):
             await asyncio.sleep(backoff)
             backoff = min(backoff*2, 30)
 
-async def printer(oci: RealOFICalculator, queue: asyncio.Queue, stop: asyncio.Event):
+async def printer(oci: RealOFICalculator, queue: asyncio.Queue, stop: asyncio.Event, collector: Optional['DataCollector'] = None):
     perf = PerfStats()
     rate_limiter = RateLimiter(window_sec=1.0, max_per_window=5)  # Max 5 WARN/ERROR per second per type
     last_stat = time.time()
@@ -243,6 +343,8 @@ async def printer(oci: RealOFICalculator, queue: asyncio.Queue, stop: asyncio.Ev
                 skip_count += 1
             if skip_count > 0:
                 dropped += skip_count
+                if collector:
+                    collector.increment_queue_dropped(skip_count)
                 # Rate-limited backpressure warning
                 if rate_limiter.should_log("backpressure"):
                     logger.warning(f"Backpressure: skipped {skip_count} stale frames (total dropped: {dropped})")
@@ -260,6 +362,12 @@ async def printer(oci: RealOFICalculator, queue: asyncio.Queue, stop: asyncio.Ev
             dt_ms = (time.perf_counter() - t0) * 1000.0
             perf.add(dt_ms)
             processed += 1
+            
+            # Collect data if enabled
+            if collector:
+                collector.add_record(ret, dt_ms, event_time_ms=ret.get("event_time_ms"))
+                if collector.should_flush():
+                    collector.flush()
 
             # Print OFI at reduced frequency (every Nth message)
             if processed % ofi_print_interval == 0 or processed <= 10:  # Always print first 10
@@ -281,7 +389,7 @@ async def printer(oci: RealOFICalculator, queue: asyncio.Queue, stop: asyncio.Ev
         except Exception as e:
             logger.error(f"consume loop exception: {type(e).__name__}: {e}", exc_info=True)
 
-async def main(demo: bool = False):
+async def main(demo: bool = False, demo_hz: int = None):
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     
@@ -306,15 +414,24 @@ async def main(demo: bool = False):
     oci = RealOFICalculator(symbol=SYMBOL, cfg=cfg)
     
     logger.info(f"OFI Calculator initialized: symbol={SYMBOL}, K={K_LEVELS}, z_window={Z_WINDOW}, ema_alpha={EMA_ALPHA}")
+    
+    # Initialize data collector if enabled
+    collector = None
+    if ENABLE_DATA_COLLECTION:
+        collector = DataCollector(symbol=SYMBOL, output_dir=DATA_OUTPUT_DIR, flush_interval=60)
+        logger.info(f"Data collection ENABLED: {collector.output_file}")
+    else:
+        logger.info("Data collection DISABLED (set ENABLE_DATA_COLLECTION=1 to enable)")
 
     if demo or not WS_URL:
-        demo_hz = 50  # Change to 100 for high-load testing (100 msgs/s)
-        prod = asyncio.create_task(demo_source(q, hz=demo_hz))
-        logger.info(f"Running in DEMO mode (local synthetic orderbook, {demo_hz} Hz = {demo_hz} msgs/s)")
+        # Support DEMO_HZ env var and --demo-hz CLI arg (CLI overrides env)
+        hz = demo_hz if demo_hz is not None else _getenv_int("DEMO_HZ", 50)
+        prod = asyncio.create_task(demo_source(q, hz=hz))
+        logger.info(f"Running in DEMO mode (high-precision timer, target {hz} Hz)")
     else:
-        prod = asyncio.create_task(ws_consume(WS_URL, q, stop))
+        prod = asyncio.create_task(ws_consume(WS_URL, q, stop, collector))
         logger.info(f"Connecting to real WebSocket: {WS_URL}")
-    cons = asyncio.create_task(printer(oci, q, stop))
+    cons = asyncio.create_task(printer(oci, q, stop, collector))
 
     try:
         await stop.wait()
@@ -326,6 +443,11 @@ async def main(demo: bool = False):
     prod.cancel()
     cons.cancel()
     results = await asyncio.gather(prod, cons, return_exceptions=True)
+    
+    # Final flush of collected data
+    if collector:
+        collector.flush()
+        logger.info(f"Final data flush: {collector.total_collected} total records collected")
     
     # Check for pending tasks
     pending = [t for t in asyncio.all_tasks() if not t.done()]
@@ -340,5 +462,7 @@ if __name__ == "__main__":
     import argparse
     ap = argparse.ArgumentParser()
     ap.add_argument("--demo", action="store_true", help="use local demo source instead of WebSocket")
+    ap.add_argument("--demo-hz", type=int, default=None, 
+                    help="demo frequency (Hz), overrides DEMO_HZ env (default: 50)")
     args = ap.parse_args()
-    asyncio.run(main(demo=args.demo))
+    asyncio.run(main(demo=args.demo, demo_hz=args.demo_hz))

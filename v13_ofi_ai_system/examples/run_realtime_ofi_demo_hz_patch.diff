@@ -1,0 +1,78 @@
+--- a/run_realtime_ofi.py
++++ b/run_realtime_ofi.py
+@@
+-import asyncio
++import asyncio
+@@
+-async def demo_source(queue: asyncio.Queue, hz: int = 50):
+-    base_p = 100.0
+-    t = 0.0
+-    while True:
+-        t += 1.0/hz
+-        mid = base_p + 0.5*math.sin(t/3.0)
+-        spread = 0.02
+-        bids = [[mid - i*spread, max(0.0, 10 + 3*math.sin(t+i) + random.uniform(-1,1))] for i in range(K_LEVELS)]
+-        asks = [[mid + i*spread, max(0.0, 10 + 3*math.cos(t+i) + random.uniform(-1,1))] for i in range(K_LEVELS)]
+-        await queue.put(json.dumps({"bids": bids, "asks": asks}))
+-        await asyncio.sleep(1.0/hz)
++async def demo_source(queue: asyncio.Queue, hz: int = 50):
++    """
++    高精度 DEMO 源：使用 monotonic 时间对齐每一拍，避免 sleep 漂移导致速率下降。
++    支持通过 --demo-hz 或环境变量 DEMO_HZ 调整频率。
++    """
++    period = 1.0 / float(hz)
++    loop = asyncio.get_running_loop()
++    next_t = loop.time()
++    base_p = 100.0
++    t = 0.0
++    while True:
++        # 生成一帧
++        t += period
++        mid = base_p + 0.5*math.sin(t/3.0)
++        spread = 0.02
++        bids = [[mid - i*spread, max(0.0, 10 + 3*math.sin(t+i) + random.uniform(-1,1))] for i in range(K_LEVELS)]
++        asks = [[mid + i*spread, max(0.0, 10 + 3*math.cos(t+i) + random.uniform(-1,1))] for i in range(K_LEVELS)]
++        await queue.put(json.dumps({"bids": bids, "asks": asks}))
++
++        # 对齐下一拍；若落后则跳过若干周期追平
++        next_t += period
++        delay = next_t - loop.time()
++        if delay > 0:
++            await asyncio.sleep(delay)
++        else:
++            missed = int(-delay // period) + 1
++            next_t += missed * period
+@@
+-async def main(demo: bool = False):
++def _getenv_int(name: str, default: int) -> int:
++    try:
++        return int(os.getenv(name, str(default)))
++    except Exception:
++        return default
++
++async def main(demo: bool = False, demo_hz: int | None = None):
+@@
+-    if demo or not WS_URL:
+-        prod = asyncio.create_task(demo_source(q))
+-        print("[INFO] running in DEMO mode (local synthetic orderbook)")
++    if demo or not WS_URL:
++        hz = demo_hz if demo_hz is not None else _getenv_int("DEMO_HZ", 50)
++        prod = asyncio.create_task(demo_source(q, hz=hz))
++        print(f"[INFO] Running in DEMO mode (target {hz} Hz)")
+     else:
+         prod = asyncio.create_task(ws_consume(WS_URL, q, stop))
+         print(f"[INFO] connecting to WebSocket: {WS_URL}")
+@@
+-if __name__ == "__main__":
+-    import argparse
+-    ap = argparse.ArgumentParser()
+-    ap.add_argument("--demo", action="store_true", help="use local demo source instead of WebSocket")
+-    args = ap.parse_args()
+-    asyncio.run(main(demo=args.demo))
++if __name__ == "__main__":
++    import argparse
++    ap = argparse.ArgumentParser()
++    ap.add_argument("--demo", action="store_true", help="use local demo source instead of WebSocket")
++    ap.add_argument("--demo-hz", type=int, default=None, help="demo frequency (Hz), overrides DEMO_HZ env")
++    args = ap.parse_args()
++    asyncio.run(main(demo=args.demo, demo_hz=args.demo_hz))
