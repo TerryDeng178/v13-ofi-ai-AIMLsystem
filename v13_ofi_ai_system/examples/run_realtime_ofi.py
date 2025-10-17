@@ -98,14 +98,24 @@ def topk_pad(levels: List[Tuple[float,float]], k: int, reverse: bool) -> List[Tu
 # === Adapter: incoming msg -> (bids, asks) ===
 def parse_message(msg: str) -> Optional[Tuple[List[Tuple[float,float]], List[Tuple[float,float]]]]:
     """
-    Expected JSON:
+    Expected JSON (Binance):
+      {"stream": "ethusdt@depth@100ms", "data": {"e": "depthUpdate", "b": [[price, qty], ...], "a": [[price, qty], ...]}}
+    Or for DEMO mode:
       {"bids": [[price, qty], ...], "asks": [[price, qty], ...]}
-    For a real exchange stream, implement the mapping here to above shape.
     """
     try:
-        data = json.loads(msg)
-        bids = topk_pad(data.get("bids", []), K_LEVELS, reverse=True)
-        asks = topk_pad(data.get("asks", []), K_LEVELS, reverse=False)
+        raw = json.loads(msg)
+        
+        # Check if it's Binance format (nested in 'data')
+        if "data" in raw:
+            data = raw["data"]
+            bids = topk_pad(data.get("b", []), K_LEVELS, reverse=True)
+            asks = topk_pad(data.get("a", []), K_LEVELS, reverse=False)
+        else:
+            # DEMO format (direct bids/asks)
+            bids = topk_pad(raw.get("bids", []), K_LEVELS, reverse=True)
+            asks = topk_pad(raw.get("asks", []), K_LEVELS, reverse=False)
+        
         return bids, asks
     except Exception:
         return None
