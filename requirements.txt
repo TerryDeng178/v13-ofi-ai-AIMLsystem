@@ -1,3 +1,4 @@
 pandas==2.2.2
 numpy==1.26.4
 pyyaml==6.0.2
+websockets>=10.0,<13.0  # Task_1.2.4: WebSocket客户端 (推荐用于实时OFI)
