@@ -1,20 +1,23 @@
-# Task 1.3.4: 生成OFI验证报告
+# Task 1.3.4: 生成OFI+CVD验证报告
 
 ## 📋 任务信息
 - **任务编号**: Task_1.3.4
 - **所属阶段**: 阶段1 - 真实OFI核心
 - **任务状态**: ⏳ 待开始
 - **优先级**: 高
-- **预计时间**: 1小时
+- **预计时间**: 2小时
 - **实际时间**: (完成后填写)
 
 ## 🎯 任务目标
-创建OFI验证报告，记录所有关键发现。
+创建OFI+CVD验证报告，记录所有关键发现。
 
 ## 📝 任务清单
-- [ ] 创建 `v13_ofi_ai_system/reports/Stage1_OFI_Validation_Report.md`
+- [ ] 创建 `v13_ofi_ai_system/reports/Stage1_OFI_CVD_Validation_Report.md`
 - [ ] 记录OFI信号统计
-- [ ] 记录预测准确率
+- [ ] 记录CVD信号统计
+- [ ] 记录融合指标统计
+- [ ] 记录背离信号统计
+- [ ] 记录各类信号预测准确率对比
 - [ ] 记录关键发现和建议
 
 ## 📦 Allowed Files

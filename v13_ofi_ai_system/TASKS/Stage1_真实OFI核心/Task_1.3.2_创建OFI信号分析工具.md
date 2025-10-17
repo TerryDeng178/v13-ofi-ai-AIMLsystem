@@ -1,4 +1,4 @@
-# Task 1.3.2: 创建OFI信号分析工具
+# Task 1.3.2: 创建OFI+CVD信号分析工具
 
 ## 📋 任务信息
 - **任务编号**: Task_1.3.2
@@ -9,11 +9,14 @@
 - **实际时间**: (完成后填写)
 
 ## 🎯 任务目标
-创建OFI信号分析工具，评估信号预测能力。
+创建OFI+CVD信号分析工具，评估信号预测能力。
 
 ## 📝 任务清单
-- [ ] 创建文件 `v13_ofi_ai_system/tests/test_ofi_signal_validity.py`
+- [ ] 创建文件 `v13_ofi_ai_system/tests/test_ofi_cvd_signal_validity.py`
 - [ ] 实现OFI信号提取功能
+- [ ] 实现CVD信号提取功能
+- [ ] 实现融合信号提取功能
+- [ ] 实现背离信号提取功能
 - [ ] 实现价格变化计算功能
 - [ ] 实现准确率评估功能
 
