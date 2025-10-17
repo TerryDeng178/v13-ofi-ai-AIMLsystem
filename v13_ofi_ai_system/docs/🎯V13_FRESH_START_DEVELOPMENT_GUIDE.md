@@ -69,9 +69,9 @@ v13_ofi_ai_system/
 
 ---
 
-### **阶段1: 真实OFI核心（3-5天）** 🔥 **最重要**
+### **阶段1: 真实OFI+CVD核心（8-10天）** 🔥 **最重要**
 
-#### **目标**: 实现真正的OFI计算，使用真实的币安订单簿数据
+#### **目标**: 实现真正的OFI和CVD计算，使用真实的币安订单簿和成交数据
 
 #### **1.1 币安WebSocket数据接入（1天）**
 
@@ -152,6 +152,8 @@ class BinanceOrderBookStream:
 ---
 
 #### **1.2 真实OFI计算（1-2天）**
+
+**注意**: 此阶段完成OFI计算后，将继续实现CVD（累积成交量差）功能
 
 **任务清单**:
 - [ ] 创建 `src/real_ofi_calculator.py`
@@ -249,54 +251,352 @@ class RealOFICalculator:
 
 ---
 
-#### **1.3 OFI信号验证（1-2天）**
+#### **1.3 真实CVD计算（2-3天）** 🆕
 
 **任务清单**:
-- [ ] 收集1-3天的真实OFI数据
-- [ ] 分析OFI信号的有效性
-- [ ] 观察OFI与价格变动的关系
-- [ ] 确定合理的OFI阈值
+- [ ] 创建 `src/real_cvd_calculator.py`
+- [ ] 创建 `src/binance_trade_stream.py`
+- [ ] 连接Binance WebSocket成交流 (`@aggTrade`)
+- [ ] 实现CVD累积计算
+- [ ] 计算CVD的Z-score标准化
+- [ ] 实时打印CVD值，观察其变化
+
+**CVD公式（必须准确实现）**:
+```
+CVD_t = CVD_{t-1} + Δ_t
+
+其中:
+Δ_t = {
+    +qty,  如果是买方主动成交（is_buyer_maker=False）
+    -qty,  如果是卖方主动成交（is_buyer_maker=True）
+}
+```
+
+**验证标准**:
+```python
+# 必须能看到真实的CVD计算结果，类似：
+{
+    'timestamp': '2025-10-17 10:30:15.123',
+    'cvd_raw': 12345.67,        # 累积成交量差
+    'cvd_delta': +10.5,         # 本次变化
+    'direction': 'buy',         # 买入/卖出
+    'cvd_z': 1.23,              # CVD Z-score
+    'ema_cvd': 12000.0          # EMA平滑值
+}
+```
+
+**成功指标**:
+- ✅ CVD值正确累积
+- ✅ 方向判断准确（买方主动 vs 卖方主动）
+- ✅ CVD Z-score分布接近标准正态分布
+- ✅ 强CVD信号（|Z| > 2）出现频率 5-10%
+
+**代码示例**（必须真实实现）:
+```python
+# src/real_cvd_calculator.py
+from collections import deque
+from dataclasses import dataclass
+from typing import Optional, List
+
+@dataclass
+class CVDConfig:
+    reset_period: Optional[int] = None  # CVD重置周期（秒），None=不重置
+    z_window: int = 300                 # z-score滚动窗口
+    ema_alpha: float = 0.2              # EMA平滑系数
+
+class RealCVDCalculator:
+    def __init__(self, symbol: str, cfg: CVDConfig = None):
+        self.symbol = symbol
+        self.cfg = cfg or CVDConfig()
+        self.cumulative_delta = 0.0
+        self.cvd_history = deque(maxlen=self.cfg.z_window)
+        self.ema_cvd = None
+    
+    def update_with_trade(self, price: float, qty: float, 
+                         is_buyer_maker: bool, event_time_ms: int):
+        """
+        更新CVD值
+        
+        参数:
+            price: 成交价格
+            qty: 成交数量
+            is_buyer_maker: True=卖方主动，False=买方主动
+            event_time_ms: 事件时间戳
+        """
+        # 判断方向
+        if is_buyer_maker:
+            # 买方挂单，卖方吃单 → 卖出压力
+            delta = -qty
+            direction = 'sell'
+        else:
+            # 卖方挂单，买方吃单 → 买入压力
+            delta = +qty
+            direction = 'buy'
+        
+        # 累积
+        self.cumulative_delta += delta
+        self.cvd_history.append(self.cumulative_delta)
+        
+        # EMA
+        if self.ema_cvd is None:
+            self.ema_cvd = self.cumulative_delta
+        else:
+            alpha = self.cfg.ema_alpha
+            self.ema_cvd = alpha * self.cumulative_delta + (1 - alpha) * self.ema_cvd
+        
+        return {
+            'symbol': self.symbol,
+            'event_time_ms': event_time_ms,
+            'cvd': self.cumulative_delta,
+            'cvd_delta': delta,
+            'direction': direction,
+            'z_cvd': self.get_cvd_zscore(),
+            'ema_cvd': self.ema_cvd
+        }
+    
+    def get_cvd_zscore(self):
+        """计算CVD Z-score"""
+        if len(self.cvd_history) < 30:
+            return 0.0
+        
+        cvd_array = list(self.cvd_history)
+        mean = sum(cvd_array) / len(cvd_array)
+        variance = sum((x - mean) ** 2 for x in cvd_array) / len(cvd_array)
+        std = variance ** 0.5
+        
+        if std < 1e-6:
+            return 0.0
+        
+        current_cvd = self.cvd_history[-1]
+        z_score = (current_cvd - mean) / std
+        
+        return z_score
+```
+
+**Binance Trade Stream 连接**:
+```python
+# src/binance_trade_stream.py
+import websocket
+import json
+from datetime import datetime
+
+class BinanceTradeStream:
+    def __init__(self, symbol='ethusdt'):
+        self.symbol = symbol.lower()
+        self.ws_url = f"wss://fstream.binancefuture.com/stream?streams={self.symbol}@aggTrade"
+        self.cvd_calculator = RealCVDCalculator(symbol.upper())
+        self.trade_history = []
+    
+    def on_message(self, ws, message):
+        """接收成交数据"""
+        data = json.loads(message)
+        if 'data' in data:
+            trade = data['data']
+            
+            # 计算CVD
+            result = self.cvd_calculator.update_with_trade(
+                price=float(trade['p']),
+                qty=float(trade['q']),
+                is_buyer_maker=trade['m'],
+                event_time_ms=trade['T']
+            )
+            
+            # 存储数据
+            self.trade_history.append(result)
+            
+            # 实时打印（验证数据）
+            print(f"[{datetime.fromtimestamp(trade['T']/1000)}] "
+                  f"{result['direction'].upper()}: {result['cvd_delta']:+.2f} | "
+                  f"CVD: {result['cvd']:.2f} | Z: {result['z_cvd']:.2f}")
+    
+    def run(self):
+        """启动WebSocket"""
+        ws = websocket.WebSocketApp(
+            self.ws_url,
+            on_message=self.on_message
+        )
+        ws.run_forever()
+```
+
+---
+
+#### **1.4 OFI+CVD融合指标（1天）** 🆕
+
+**任务清单**:
+- [ ] 创建 `src/ofi_cvd_fusion.py`
+- [ ] 实现OFI和CVD的融合策略
+- [ ] 实现背离检测功能
+- [ ] 测试融合指标效果
+
+**融合策略**:
+```python
+# src/ofi_cvd_fusion.py
+class OFI_CVD_Fusion:
+    def __init__(self, w_ofi=0.6, w_cvd=0.4):
+        """
+        OFI+CVD融合指标
+        
+        参数:
+            w_ofi: OFI权重（默认0.6）
+            w_cvd: CVD权重（默认0.4）
+        """
+        self.w_ofi = w_ofi
+        self.w_cvd = w_cvd
+    
+    def get_fusion_signal(self, z_ofi: float, z_cvd: float):
+        """
+        生成融合信号
+        
+        返回:
+            fusion_score: 融合得分
+            signal: 'strong_buy' / 'buy' / 'neutral' / 'sell' / 'strong_sell'
+            consistency: 信号一致性 (0-1)
+        """
+        # 加权平均
+        fusion_score = self.w_ofi * z_ofi + self.w_cvd * z_cvd
+        
+        # 信号一致性
+        if z_ofi * z_cvd > 0:
+            consistency = min(abs(z_ofi), abs(z_cvd)) / max(abs(z_ofi), abs(z_cvd))
+        else:
+            consistency = 0.0  # 方向不一致
+        
+        # 生成信号
+        if fusion_score > 2.5 and consistency > 0.7:
+            signal = 'strong_buy'
+        elif fusion_score > 1.5:
+            signal = 'buy'
+        elif fusion_score < -2.5 and consistency > 0.7:
+            signal = 'strong_sell'
+        elif fusion_score < -1.5:
+            signal = 'sell'
+        else:
+            signal = 'neutral'
+        
+        return {
+            'fusion_score': fusion_score,
+            'signal': signal,
+            'consistency': consistency,
+            'ofi_weight': self.w_ofi,
+            'cvd_weight': self.w_cvd
+        }
+    
+    def detect_divergence(self, price: float, z_ofi: float, z_cvd: float, 
+                          lookback_prices: list):
+        """
+        检测OFI-CVD背离
+        
+        返回:
+            has_divergence: True/False
+            divergence_type: 'bullish' / 'bearish' / 'inconsistent' / None
+        """
+        if len(lookback_prices) < 2:
+            return {'has_divergence': False, 'divergence_type': None}
+        
+        # 价格趋势
+        price_trend = price - lookback_prices[0]
+        
+        # 正向背离（看涨）
+        if price_trend < 0 and z_ofi > 1 and z_cvd > 0.5:
+            return {
+                'has_divergence': True,
+                'divergence_type': 'bullish',
+                'strength': (abs(price_trend) * (z_ofi + z_cvd)) / 100
+            }
+        
+        # 负向背离（看跌）
+        if price_trend > 0 and z_ofi < -1 and z_cvd < -0.5:
+            return {
+                'has_divergence': True,
+                'divergence_type': 'bearish',
+                'strength': (abs(price_trend) * abs(z_ofi + z_cvd)) / 100
+            }
+        
+        # OFI-CVD不一致
+        if abs(z_ofi) > 2 and abs(z_cvd) > 1 and z_ofi * z_cvd < 0:
+            return {
+                'has_divergence': True,
+                'divergence_type': 'inconsistent',
+                'strength': abs(z_ofi - z_cvd)
+            }
+        
+        return {'has_divergence': False, 'divergence_type': None}
+```
+
+**成功指标**:
+- ✅ 融合信号逻辑清晰
+- ✅ 背离检测准确
+- ✅ 参数可调整
+
+---
+
+#### **1.5 OFI+CVD信号验证（1-2天）**
+
+**任务清单**:
+- [ ] 收集1-3天的真实OFI+CVD数据
+- [ ] 分析OFI、CVD、融合指标的有效性
+- [ ] 观察指标与价格变动的关系
+- [ ] 分析背离信号的预测能力
+- [ ] 确定合理的阈值
 
 **验证方法**:
 ```python
-# tests/test_ofi_signal_validity.py
-def test_ofi_predictive_power():
-    """验证OFI的预测能力"""
+# tests/test_ofi_cvd_signal_validity.py
+def test_ofi_cvd_predictive_power():
+    """验证OFI+CVD的预测能力"""
     # 1. 收集数据
     ofi_data = load_historical_ofi_data('data/ofi_history.csv')
+    cvd_data = load_historical_cvd_data('data/cvd_history.csv')
+    fusion_data = load_fusion_data('data/fusion_history.csv')
     price_data = load_historical_price_data('data/price_history.csv')
     
-    # 2. 分析OFI信号
-    strong_buy_signals = ofi_data[ofi_data['ofi_z'] > 2]
-    strong_sell_signals = ofi_data[ofi_data['ofi_z'] < -2]
+    # 2. 分析各类信号
+    ofi_buy_signals = ofi_data[ofi_data['ofi_z'] > 2]
+    cvd_buy_signals = cvd_data[cvd_data['cvd_z'] > 1]
+    fusion_buy_signals = fusion_data[fusion_data['fusion_score'] > 2.5]
+    divergence_signals = fusion_data[fusion_data['has_divergence'] == True]
     
     # 3. 计算后续价格变化
-    buy_signal_returns = calculate_forward_returns(strong_buy_signals, price_data, periods=[5, 10, 30])
-    sell_signal_returns = calculate_forward_returns(strong_sell_signals, price_data, periods=[5, 10, 30])
+    ofi_returns = calculate_forward_returns(ofi_buy_signals, price_data, periods=[5, 10, 30])
+    cvd_returns = calculate_forward_returns(cvd_buy_signals, price_data, periods=[5, 10, 30])
+    fusion_returns = calculate_forward_returns(fusion_buy_signals, price_data, periods=[5, 10, 30])
+    divergence_returns = calculate_forward_returns(divergence_signals, price_data, periods=[5, 10, 30])
     
     # 4. 评估预测准确性
-    buy_accuracy = (buy_signal_returns > 0).mean()
-    sell_accuracy = (sell_signal_returns < 0).mean()
+    ofi_accuracy = (ofi_returns > 0).mean()
+    cvd_accuracy = (cvd_returns > 0).mean()
+    fusion_accuracy = (fusion_returns > 0).mean()
+    divergence_accuracy = (divergence_returns > 0).mean()
     
-    print(f"买入信号准确率: {buy_accuracy:.2%}")
-    print(f"卖出信号准确率: {sell_accuracy:.2%}")
+    print(f"OFI信号准确率: {ofi_accuracy:.2%}")
+    print(f"CVD信号准确率: {cvd_accuracy:.2%}")
+    print(f"融合信号准确率: {fusion_accuracy:.2%}")
+    print(f"背离信号准确率: {divergence_accuracy:.2%}")
     
-    # 成功标准: 准确率 > 55%
-    assert buy_accuracy > 0.55, "OFI买入信号准确率不足"
-    assert sell_accuracy > 0.55, "OFI卖出信号准确率不足"
+    # 成功标准
+    assert ofi_accuracy > 0.55, "OFI信号准确率不足"
+    assert cvd_accuracy > 0.55, "CVD信号准确率不足"
+    assert fusion_accuracy > 0.60, "融合信号准确率不足"
+    assert divergence_accuracy > 0.55, "背离信号准确率不足"
 ```
 
 **成功指标**:
 - ✅ OFI信号预测准确率 > 55%
-- ✅ 强OFI信号（|Z| > 2）的准确率 > 60%
-- ✅ OFI信号与价格变动呈显著相关性
+- ✅ CVD信号预测准确率 > 55%
+- ✅ 融合信号预测准确率 > 60%
+- ✅ 背离信号预测准确率 > 55%
+- ✅ 融合信号效果优于单一指标
 
 **阶段1交付物**:
-- ✅ 能实时接收币安订单簿数据
+- ✅ 能实时接收币安订单簿数据（Order Book Stream）
+- ✅ 能实时接收币安成交数据（Trade Stream）
 - ✅ 能实时计算真实的OFI值
-- ✅ OFI信号经过验证，具有预测能力
-- ✅ 1-3天的历史OFI数据
-- ✅ OFI信号有效性分析报告
+- ✅ 能实时计算真实的CVD值
+- ✅ 能实时生成OFI+CVD融合信号
+- ✅ 能检测OFI-CVD背离
+- ✅ OFI、CVD、融合指标经过验证，具有预测能力
+- ✅ 1-3天的历史OFI+CVD数据
+- ✅ OFI+CVD信号有效性分析报告
 
 ---
 
@@ -444,6 +744,17 @@ features = {
     'ofi_z': float,           # OFI Z-score
     'ofi_momentum': float,    # OFI动量
     'ofi_volatility': float,  # OFI波动性
+    
+    # CVD相关（新增）
+    'cvd_z': float,           # CVD Z-score
+    'cvd_momentum': float,    # CVD动量
+    'cvd_rate': float,        # CVD变化率
+    
+    # OFI-CVD融合（新增）
+    'fusion_score': float,    # 融合得分
+    'signal_consistency': float,  # 信号一致性
+    'has_divergence': bool,   # 是否存在背离
+    'divergence_type': str,   # 背离类型
     
     # 价格相关
     'price_change': float,    # 价格变化
@@ -684,7 +995,9 @@ def compare_models():
 
 | 阶段 | 时间 | 关键指标 | 成功标准 |
 |------|------|---------|---------|
-| **阶段1** | 3-5天 | OFI信号准确率 | >55% |
+| **阶段1** | 8-10天 | OFI信号准确率 | >55% |
+| **阶段1** | 8-10天 | CVD信号准确率 | >55% |
+| **阶段1** | 8-10天 | 融合信号准确率 | >60% |
 | **阶段2** | 2-3天 | 真实交易执行 | 能稳定运行24小时 |
 | **阶段2** | 2-3天 | 简单策略胜率 | >50% |
 | **阶段3** | 5-7天 | AI模型准确率 | >55% |
@@ -787,12 +1100,13 @@ def compare_models():
 
 ## 🎉 **预期成果**
 
-### **2-3周后，你将拥有**:
-1. ✅ **真实的OFI计算系统** - 使用真实币安数据
-2. ✅ **能盈利的交易策略** - 在测试网验证有效
-3. ✅ **有效的AI模型** - 提升交易表现
-4. ✅ **完整的交易记录** - 真实的PnL数据
-5. ✅ **可部署的系统** - 随时可以上线实盘
+### **3-4周后，你将拥有**:
+1. ✅ **真实的OFI+CVD计算系统** - 使用真实币安数据
+2. ✅ **多维度信号融合** - OFI、CVD、背离检测
+3. ✅ **能盈利的交易策略** - 在测试网验证有效
+4. ✅ **有效的AI模型** - 提升交易表现
+5. ✅ **完整的交易记录** - 真实的PnL数据
+6. ✅ **可部署的系统** - 随时可以上线实盘
 
 ### **更重要的是**:
 - ✅ **每个功能都是真实的**
@@ -849,9 +1163,9 @@ def compare_models():
 
 ---
 
-**文档版本**: V13_Fresh_Start_v1.0  
+**文档版本**: V13_Fresh_Start_v1.1  
 **创建时间**: 2025-01-17  
-**最后更新**: 2025-01-17  
+**最后更新**: 2025-10-17 (新增CVD功能模块)  
 **状态**: 准备开始  
 
 **作者寄语**: 
