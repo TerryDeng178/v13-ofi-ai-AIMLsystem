@@ -27,6 +27,7 @@
 
 ## 📦 Allowed Files
 - `v13_ofi_ai_system/examples/run_realtime_ofi.py` (新建)
+- `v13_ofi_ai_system/examples/README_realtime_ofi.md` (新建)
 
 ## 📚 依赖项
 - **前置任务**: Task_1.2.3
