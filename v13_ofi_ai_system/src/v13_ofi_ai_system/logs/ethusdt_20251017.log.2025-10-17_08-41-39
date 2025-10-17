@@ -1,0 +1,178 @@
+2025-10-17 08:41:39,928 DEBUG LOB[ethusdt] - Received message (length=293)
+2025-10-17 08:41:39,928 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594452289, u=76594452610, pu=76594442838
+2025-10-17 08:41:39,930 INFO LOB[ethusdt] - SUMMARY | t=1572s | msgs=3290 | rate=2.09/s | p50=81.0 p95=83.0 p99=116.0 | breaks=0 resyncs=0 reconnects=0 | batch_span_p95=788 max=1536 | log_q_p95=2 max=7 drops=0
+2025-10-17 08:41:39,931 DEBUG LOB[ethusdt] - metrics.json updated
+2025-10-17 08:41:40,035 DEBUG LOB[ethusdt] - Received message (length=274)
+2025-10-17 08:41:40,035 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594452638, u=76594452997, pu=76594452610
+2025-10-17 08:41:40,160 DEBUG LOB[ethusdt] - Received message (length=276)
+2025-10-17 08:41:40,160 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594453083, u=76594453365, pu=76594452997
+2025-10-17 08:41:40,283 DEBUG LOB[ethusdt] - Received message (length=194)
+2025-10-17 08:41:40,283 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594453433, u=76594453512, pu=76594453365
+2025-10-17 08:41:42,857 DEBUG LOB[ethusdt] - Received message (length=379)
+2025-10-17 08:41:42,857 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594463490, u=76594464580, pu=76594453512
+2025-10-17 08:41:43,107 DEBUG LOB[ethusdt] - Received message (length=421)
+2025-10-17 08:41:43,107 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594465500, u=76594466038, pu=76594464580
+2025-10-17 08:41:46,011 DEBUG LOB[ethusdt] - Received message (length=251)
+2025-10-17 08:41:46,011 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594479895, u=76594480412, pu=76594466038
+2025-10-17 08:41:46,129 DEBUG LOB[ethusdt] - Received message (length=276)
+2025-10-17 08:41:46,129 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594480746, u=76594481250, pu=76594480412
+2025-10-17 08:41:46,239 DEBUG LOB[ethusdt] - Received message (length=192)
+2025-10-17 08:41:46,239 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594481467, u=76594481467, pu=76594481250
+2025-10-17 08:41:46,368 DEBUG LOB[ethusdt] - Received message (length=191)
+2025-10-17 08:41:46,368 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594482203, u=76594482216, pu=76594481467
+2025-10-17 08:41:48,839 DEBUG LOB[ethusdt] - Received message (length=397)
+2025-10-17 08:41:48,839 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594496555, u=76594497093, pu=76594482216
+2025-10-17 08:41:49,108 DEBUG LOB[ethusdt] - Received message (length=311)
+2025-10-17 08:41:49,108 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594498201, u=76594498821, pu=76594497093
+2025-10-17 08:41:49,231 DEBUG LOB[ethusdt] - Received message (length=281)
+2025-10-17 08:41:49,231 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594498983, u=76594499377, pu=76594498821
+2025-10-17 08:41:49,415 DEBUG LOB[ethusdt] - Received message (length=191)
+2025-10-17 08:41:49,415 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594500190, u=76594500192, pu=76594499377
+2025-10-17 08:41:51,730 DEBUG LOB[ethusdt] - Received message (length=353)
+2025-10-17 08:41:51,730 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594513505, u=76594514012, pu=76594500192
+2025-10-17 08:41:51,731 INFO LOB[ethusdt] - SUMMARY | t=1584s | msgs=3304 | rate=2.09/s | p50=81.0 p95=83.0 p99=116.0 | breaks=0 resyncs=0 reconnects=0 | batch_span_p95=788 max=1536 | log_q_p95=2 max=7 drops=0
+2025-10-17 08:41:51,732 DEBUG LOB[ethusdt] - metrics.json updated
+2025-10-17 08:41:51,835 DEBUG LOB[ethusdt] - Received message (length=194)
+2025-10-17 08:41:51,835 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594514125, u=76594514169, pu=76594514012
+2025-10-17 08:41:52,144 DEBUG LOB[ethusdt] - Received message (length=271)
+2025-10-17 08:41:52,144 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594515993, u=76594516325, pu=76594514169
+2025-10-17 08:41:52,251 DEBUG LOB[ethusdt] - Received message (length=254)
+2025-10-17 08:41:52,251 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594516664, u=76594517026, pu=76594516325
+2025-10-17 08:41:52,522 DEBUG LOB[ethusdt] - Received message (length=191)
+2025-10-17 08:41:52,522 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594518003, u=76594518004, pu=76594517026
+2025-10-17 08:41:54,914 DEBUG LOB[ethusdt] - Received message (length=333)
+2025-10-17 08:41:54,914 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594527506, u=76594527821, pu=76594518004
+2025-10-17 08:41:55,037 DEBUG LOB[ethusdt] - Received message (length=194)
+2025-10-17 08:41:55,037 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594528019, u=76594528247, pu=76594527821
+2025-10-17 08:41:55,174 DEBUG LOB[ethusdt] - Received message (length=273)
+2025-10-17 08:41:55,174 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594528512, u=76594528827, pu=76594528247
+2025-10-17 08:41:55,287 DEBUG LOB[ethusdt] - Received message (length=216)
+2025-10-17 08:41:55,287 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594529073, u=76594529252, pu=76594528827
+2025-10-17 08:41:55,505 DEBUG LOB[ethusdt] - Received message (length=191)
+2025-10-17 08:41:55,505 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594529840, u=76594529842, pu=76594529252
+2025-10-17 08:41:57,870 DEBUG LOB[ethusdt] - Received message (length=256)
+2025-10-17 08:41:57,870 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594540860, u=76594541257, pu=76594529842
+2025-10-17 08:41:57,999 DEBUG LOB[ethusdt] - Received message (length=194)
+2025-10-17 08:41:57,999 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594541461, u=76594541668, pu=76594541257
+2025-10-17 08:41:58,131 DEBUG LOB[ethusdt] - Received message (length=194)
+2025-10-17 08:41:58,131 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594542067, u=76594542218, pu=76594541668
+2025-10-17 08:42:00,546 DEBUG LOB[ethusdt] - Received message (length=233)
+2025-10-17 08:42:00,546 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594555839, u=76594556042, pu=76594542218
+2025-10-17 08:42:00,653 DEBUG LOB[ethusdt] - Received message (length=277)
+2025-10-17 08:42:00,653 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594556277, u=76594556694, pu=76594556042
+2025-10-17 08:42:00,927 DEBUG LOB[ethusdt] - Received message (length=191)
+2025-10-17 08:42:00,927 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594557498, u=76594557500, pu=76594556694
+2025-10-17 08:42:01,084 DEBUG LOB[ethusdt] - Received message (length=438)
+2025-10-17 08:42:01,084 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594558194, u=76594558653, pu=76594557500
+2025-10-17 08:42:03,925 DEBUG LOB[ethusdt] - Received message (length=251)
+2025-10-17 08:42:03,925 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594574371, u=76594574683, pu=76594558653
+2025-10-17 08:42:03,926 INFO LOB[ethusdt] - SUMMARY | t=1596s | msgs=3321 | rate=2.08/s | p50=81.0 p95=83.0 p99=115.8 | breaks=0 resyncs=0 reconnects=0 | batch_span_p95=788 max=1536 | log_q_p95=2 max=7 drops=0
+2025-10-17 08:42:03,928 DEBUG LOB[ethusdt] - metrics.json updated
+2025-10-17 08:42:04,033 DEBUG LOB[ethusdt] - Received message (length=319)
+2025-10-17 08:42:04,033 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594575036, u=76594575607, pu=76594574683
+2025-10-17 08:42:04,142 DEBUG LOB[ethusdt] - Received message (length=193)
+2025-10-17 08:42:04,142 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594575690, u=76594575690, pu=76594575607
+2025-10-17 08:42:04,304 DEBUG LOB[ethusdt] - Received message (length=191)
+2025-10-17 08:42:04,304 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594576741, u=76594576747, pu=76594575690
+2025-10-17 08:42:07,070 DEBUG LOB[ethusdt] - Received message (length=333)
+2025-10-17 08:42:07,070 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594593357, u=76594594682, pu=76594576747
+2025-10-17 08:42:07,172 DEBUG LOB[ethusdt] - Received message (length=194)
+2025-10-17 08:42:07,172 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594594735, u=76594594833, pu=76594594682
+2025-10-17 08:42:09,960 DEBUG LOB[ethusdt] - Received message (length=351)
+2025-10-17 08:42:09,960 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594608560, u=76594608980, pu=76594594833
+2025-10-17 08:42:10,065 DEBUG LOB[ethusdt] - Received message (length=251)
+2025-10-17 08:42:10,065 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594609008, u=76594609388, pu=76594608980
+2025-10-17 08:42:10,202 DEBUG LOB[ethusdt] - Received message (length=273)
+2025-10-17 08:42:10,202 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594609674, u=76594610264, pu=76594609388
+2025-10-17 08:42:10,312 DEBUG LOB[ethusdt] - Received message (length=234)
+2025-10-17 08:42:10,312 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594610321, u=76594610446, pu=76594610264
+2025-10-17 08:42:12,771 DEBUG LOB[ethusdt] - Received message (length=404)
+2025-10-17 08:42:12,771 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594623918, u=76594624657, pu=76594610446
+2025-10-17 08:42:12,973 DEBUG LOB[ethusdt] - Received message (length=444)
+2025-10-17 08:42:12,973 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594625456, u=76594625927, pu=76594624657
+2025-10-17 08:42:13,074 DEBUG LOB[ethusdt] - Received message (length=213)
+2025-10-17 08:42:13,075 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594626032, u=76594626633, pu=76594625927
+2025-10-17 08:42:13,204 DEBUG LOB[ethusdt] - Received message (length=231)
+2025-10-17 08:42:13,204 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594626866, u=76594626954, pu=76594626633
+2025-10-17 08:42:13,484 DEBUG LOB[ethusdt] - Received message (length=191)
+2025-10-17 08:42:13,485 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594628862, u=76594628864, pu=76594626954
+2025-10-17 08:42:15,836 DEBUG LOB[ethusdt] - Received message (length=256)
+2025-10-17 08:42:15,836 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594646333, u=76594647070, pu=76594628864
+2025-10-17 08:42:15,838 INFO LOB[ethusdt] - SUMMARY | t=1608s | msgs=3336 | rate=2.08/s | p50=81.0 p95=83.0 p99=115.7 | breaks=0 resyncs=0 reconnects=0 | batch_span_p95=788 max=1536 | log_q_p95=2 max=7 drops=0
+2025-10-17 08:42:15,839 DEBUG LOB[ethusdt] - metrics.json updated
+2025-10-17 08:42:15,965 DEBUG LOB[ethusdt] - Received message (length=213)
+2025-10-17 08:42:15,965 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594647306, u=76594647682, pu=76594647070
+2025-10-17 08:42:16,099 DEBUG LOB[ethusdt] - Received message (length=236)
+2025-10-17 08:42:16,099 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594647866, u=76594648617, pu=76594647682
+2025-10-17 08:42:16,204 DEBUG LOB[ethusdt] - Received message (length=253)
+2025-10-17 08:42:16,204 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594648645, u=76594648853, pu=76594648617
+2025-10-17 08:42:16,308 DEBUG LOB[ethusdt] - Received message (length=235)
+2025-10-17 08:42:16,308 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594649324, u=76594650025, pu=76594648853
+2025-10-17 08:42:16,449 DEBUG LOB[ethusdt] - Received message (length=194)
+2025-10-17 08:42:16,449 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594650363, u=76594650400, pu=76594650025
+2025-10-17 08:42:16,580 DEBUG LOB[ethusdt] - Received message (length=191)
+2025-10-17 08:42:16,580 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594651202, u=76594651206, pu=76594650400
+2025-10-17 08:42:19,128 DEBUG LOB[ethusdt] - Received message (length=251)
+2025-10-17 08:42:19,128 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594667833, u=76594668182, pu=76594651206
+2025-10-17 08:42:19,230 DEBUG LOB[ethusdt] - Received message (length=281)
+2025-10-17 08:42:19,230 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594668205, u=76594668690, pu=76594668182
+2025-10-17 08:42:21,115 DEBUG LOB[ethusdt] - Received message (length=194)
+2025-10-17 08:42:21,115 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594682762, u=76594682762, pu=76594668690
+2025-10-17 08:42:21,390 DEBUG LOB[ethusdt] - Received message (length=191)
+2025-10-17 08:42:21,390 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594684951, u=76594684955, pu=76594682762
+2025-10-17 08:42:21,665 DEBUG LOB[ethusdt] - Received message (length=192)
+2025-10-17 08:42:21,665 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594686729, u=76594686729, pu=76594684955
+2025-10-17 08:42:21,929 DEBUG LOB[ethusdt] - Received message (length=342)
+2025-10-17 08:42:21,929 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594688505, u=76594689098, pu=76594686729
+2025-10-17 08:42:22,057 DEBUG LOB[ethusdt] - Received message (length=351)
+2025-10-17 08:42:22,057 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594689349, u=76594690065, pu=76594689098
+2025-10-17 08:42:22,164 DEBUG LOB[ethusdt] - Received message (length=213)
+2025-10-17 08:42:22,164 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594690136, u=76594690569, pu=76594690065
+2025-10-17 08:42:23,319 DEBUG LOB[ethusdt] - Received message (length=212)
+2025-10-17 08:42:23,319 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594697905, u=76594697905, pu=76594690569
+2025-10-17 08:42:23,587 DEBUG LOB[ethusdt] - Received message (length=191)
+2025-10-17 08:42:23,587 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594699452, u=76594699459, pu=76594697905
+2025-10-17 08:42:24,008 DEBUG LOB[ethusdt] - Received message (length=192)
+2025-10-17 08:42:24,008 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594702084, u=76594702084, pu=76594699459
+2025-10-17 08:42:24,788 DEBUG LOB[ethusdt] - Received message (length=234)
+2025-10-17 08:42:24,788 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594707115, u=76594707525, pu=76594702084
+2025-10-17 08:42:24,908 DEBUG LOB[ethusdt] - Received message (length=300)
+2025-10-17 08:42:24,908 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594707963, u=76594708439, pu=76594707525
+2025-10-17 08:42:25,056 DEBUG LOB[ethusdt] - Received message (length=296)
+2025-10-17 08:42:25,056 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594708807, u=76594709397, pu=76594708439
+2025-10-17 08:42:25,179 DEBUG LOB[ethusdt] - Received message (length=323)
+2025-10-17 08:42:25,179 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594709572, u=76594709936, pu=76594709397
+2025-10-17 08:42:27,932 DEBUG LOB[ethusdt] - Received message (length=293)
+2025-10-17 08:42:27,932 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594727218, u=76594727598, pu=76594709936
+2025-10-17 08:42:27,933 INFO LOB[ethusdt] - SUMMARY | t=1620s | msgs=3358 | rate=2.07/s | p50=81.0 p95=83.0 p99=115.4 | breaks=0 resyncs=0 reconnects=0 | batch_span_p95=787 max=1536 | log_q_p95=2 max=7 drops=0
+2025-10-17 08:42:27,935 DEBUG LOB[ethusdt] - metrics.json updated
+2025-10-17 08:42:28,044 DEBUG LOB[ethusdt] - Received message (length=277)
+2025-10-17 08:42:28,044 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594727881, u=76594728460, pu=76594727598
+2025-10-17 08:42:28,151 DEBUG LOB[ethusdt] - Received message (length=237)
+2025-10-17 08:42:28,151 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594728615, u=76594728970, pu=76594728460
+2025-10-17 08:42:28,353 DEBUG LOB[ethusdt] - Received message (length=211)
+2025-10-17 08:42:28,353 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594729872, u=76594729972, pu=76594728970
+2025-10-17 08:42:31,114 DEBUG LOB[ethusdt] - Received message (length=231)
+2025-10-17 08:42:31,114 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594747030, u=76594747381, pu=76594729972
+2025-10-17 08:42:31,229 DEBUG LOB[ethusdt] - Received message (length=341)
+2025-10-17 08:42:31,229 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594747765, u=76594748336, pu=76594747381
+2025-10-17 08:42:31,500 DEBUG LOB[ethusdt] - Received message (length=191)
+2025-10-17 08:42:31,501 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594749607, u=76594749608, pu=76594748336
+2025-10-17 08:42:33,756 DEBUG LOB[ethusdt] - Received message (length=353)
+2025-10-17 08:42:33,756 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594763573, u=76594763910, pu=76594749608
+2025-10-17 08:42:33,890 DEBUG LOB[ethusdt] - Received message (length=237)
+2025-10-17 08:42:33,890 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594764140, u=76594764338, pu=76594763910
+2025-10-17 08:42:34,040 DEBUG LOB[ethusdt] - Received message (length=251)
+2025-10-17 08:42:34,040 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594765057, u=76594765385, pu=76594764338
+2025-10-17 08:42:34,143 DEBUG LOB[ethusdt] - Received message (length=341)
+2025-10-17 08:42:34,143 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594765683, u=76594766255, pu=76594765385
+2025-10-17 08:42:34,414 DEBUG LOB[ethusdt] - Received message (length=191)
+2025-10-17 08:42:34,414 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594767241, u=76594767251, pu=76594766255
+2025-10-17 08:42:35,622 DEBUG LOB[ethusdt] - Received message (length=212)
+2025-10-17 08:42:35,622 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594772952, u=76594772952, pu=76594767251
+2025-10-17 08:42:37,089 DEBUG LOB[ethusdt] - Received message (length=310)
+2025-10-17 08:42:37,089 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594777450, u=76594777658, pu=76594772952
+2025-10-17 08:42:37,194 DEBUG LOB[ethusdt] - Received message (length=236)
+2025-10-17 08:42:37,194 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594777889, u=76594778227, pu=76594777658
+2025-10-17 08:42:37,378 DEBUG LOB[ethusdt] - Received message (length=191)
+2025-10-17 08:42:37,378 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76594778847, u=76594778850, pu=76594778227
