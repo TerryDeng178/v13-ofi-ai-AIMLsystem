@@ -114,8 +114,10 @@ class MonitoringMetrics:
         }
 
 # ---- parsing ----
-def parse_aggtrade_message(text: str) -> Optional[Tuple[float, float, bool, Optional[int]]]:
-    """Support both stream-wrapped and raw aggTrade payloads."""
+def parse_aggtrade_message(text: str) -> Optional[Tuple[float, float, bool, Optional[int], Optional[int]]]:
+    """Support both stream-wrapped and raw aggTrade payloads.
+    Returns: (price, qty, is_buy, event_time_ms, agg_trade_id)
+    """
     try:
         obj = json.loads(text)
     except Exception:
@@ -127,7 +129,8 @@ def parse_aggtrade_message(text: str) -> Optional[Tuple[float, float, bool, Opti
         m = bool(payload["m"])
         is_buy = (not m)  # m=isBuyerMaker: True means seller was aggressive -> is_buy=False
         et = payload.get("E") or payload.get("T")
-        return p, q, is_buy, int(et) if et is not None else None
+        a = payload.get("a")  # aggTradeId - 真正的唯一标识符
+        return p, q, is_buy, int(et) if et is not None else None, int(a) if a is not None else None
     except Exception:
         return None
 
@@ -203,7 +206,7 @@ async def processor(symbol: str, queue: asyncio.Queue, stop_evt: asyncio.Event, 
             log.warning("Parse error on message (truncated): %s", raw[:160])
             continue
 
-        price, qty, is_buy, event_ms = parsed
+        price, qty, is_buy, event_ms, agg_trade_id = parsed
         ret = calc.update_with_trade(price=price, qty=qty, is_buy=is_buy, event_time_ms=event_ms)
         processed += 1
         dt = time.time() - t0

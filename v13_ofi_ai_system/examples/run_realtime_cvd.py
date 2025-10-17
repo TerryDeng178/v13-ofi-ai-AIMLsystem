@@ -78,6 +78,7 @@ class CVDRecord:
     """单条CVD数据记录"""
     timestamp: float           # 接收时间戳（Unix秒）
     event_time_ms: Optional[int]  # 交易所事件时间（毫秒）
+    agg_trade_id: Optional[int]   # Binance aggTradeId（真正的唯一标识）
     price: float              # 成交价格
     qty: float                # 成交数量
     is_buy: bool              # 买卖方向
@@ -113,6 +114,9 @@ class MonitoringMetrics:
 
 # ---- parsing ----
 def parse_aggtrade_message(text: str) -> Optional[tuple]:
+    """Parse aggTrade message.
+    Returns: (price, qty, is_buy, event_time_ms, agg_trade_id)
+    """
     try:
         obj = json.loads(text)
     except Exception:
@@ -124,7 +128,8 @@ def parse_aggtrade_message(text: str) -> Optional[tuple]:
         m = bool(payload["m"])
         is_buy = (not m)
         et = payload.get("E") or payload.get("T")
-        return p, q, is_buy, int(et) if et is not None else None
+        a = payload.get("a")  # aggTradeId - 真正的唯一标识符
+        return p, q, is_buy, int(et) if et is not None else None, int(a) if a is not None else None
     except Exception:
         return None
 
@@ -194,7 +199,7 @@ async def processor(
             log.warning("Parse error on message")
             continue
         
-        price, qty, is_buy, event_ms = parsed
+        price, qty, is_buy, event_ms, agg_trade_id = parsed
         ret = calc.update_with_trade(price=price, qty=qty, is_buy=is_buy, event_time_ms=event_ms)
         processed += 1
         
@@ -205,6 +210,7 @@ async def processor(
         record = CVDRecord(
             timestamp=ts_recv,
             event_time_ms=event_ms,
+            agg_trade_id=agg_trade_id,
             price=price,
             qty=qty,
             is_buy=is_buy,
