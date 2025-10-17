@@ -281,7 +281,62 @@ msg = await asyncio.wait_for(ws.recv(), timeout=60)  # 改为 120 或更大
 
 ## 🛡️ 生产环境建议
 
-### 1. 日志持久化
+### 1. 订阅/鉴权安全 🔐
+
+**⚠️ 重要**: 在 `ws_consume` 连接成功后发送订阅/鉴权消息，**密钥必须从环境变量读取，不要硬编码在代码中**。
+
+```python
+# ❌ 错误做法（硬编码，有泄漏风险）
+API_KEY = "your_api_key_here"
+API_SECRET = "your_secret_here"
+
+# ✅ 正确做法（从环境变量读取）
+API_KEY = os.getenv("API_KEY")
+API_SECRET = os.getenv("API_SECRET")
+
+# 在 ws_consume 函数中，连接后发送鉴权
+async with websockets.connect(url, ping_interval=20, close_timeout=5) as ws:
+    # 鉴权消息（示例）
+    if API_KEY and API_SECRET:
+        auth_msg = json.dumps({
+            "method": "auth",
+            "api_key": API_KEY,
+            "signature": generate_signature(API_SECRET, timestamp)
+        })
+        await ws.send(auth_msg)
+        logger.info("Sent authentication message")
+    
+    # 订阅消息
+    subscribe_msg = json.dumps({
+        "method": "SUBSCRIBE",
+        "params": [f"{SYMBOL.lower()}@depth@100ms"],
+        "id": 1
+    })
+    await ws.send(subscribe_msg)
+    logger.info(f"Sent subscription: {subscribe_msg}")
+```
+
+**环境变量设置**：
+```bash
+# Linux/Mac
+export API_KEY="your_api_key"
+export API_SECRET="your_api_secret"
+python run_realtime_ofi.py
+
+# Windows PowerShell
+$env:API_KEY="your_api_key"
+$env:API_SECRET="your_api_secret"
+python run_realtime_ofi.py
+```
+
+**最佳实践**：
+- ✅ 使用 `.env` 文件 + `python-dotenv` 加载环境变量
+- ✅ 生产环境从密钥管理服务读取（AWS Secrets Manager、HashiCorp Vault等）
+- ✅ 定期轮换密钥
+- ❌ 不要把密钥提交到Git仓库
+- ❌ 不要在日志中打印密钥
+
+### 2. 日志持久化
 
 将日志输出到文件：
 
@@ -289,7 +344,7 @@ msg = await asyncio.wait_for(ws.recv(), timeout=60)  # 改为 120 或更大
 python run_realtime_ofi.py --demo > ofi_$(date +%Y%m%d_%H%M%S).log 2>&1
 ```
 
-### 2. 监控告警
+### 3. 监控告警
 
 关注以下指标：
 - `parse_errors > 0`: 消息格式不兼容
