@@ -255,20 +255,23 @@ class RealOFICalculator:
             k_components.append(comp)
             ofi_val += comp
 
-        # 更新OFI历史
-        self.ofi_hist.append(ofi_val)
-        
-        # 计算Z-score（warmup期除外）
+        # 计算Z-score（基于"上一窗口"，不包含当前ofi_val）
         z_ofi = None
         warmup = False
+        std_zero = False
         warmup_threshold = max(5, self.z_window // 5)
         
-        if len(self.ofi_hist) < warmup_threshold:
+        # 统一从历史窗口获取数据（不包含当前值）
+        arr = list(self.ofi_hist)
+        if len(arr) < warmup_threshold:
             warmup = True
         else:
-            arr = list(self.ofi_hist)
             m, s = self._mean_std(arr)
-            z_ofi = 0.0 if s <= 1e-9 else (ofi_val - m) / s
+            if s <= 1e-9:
+                z_ofi = 0.0
+                std_zero = True  # 标记标准差为0的情况
+            else:
+                z_ofi = (ofi_val - m) / s
 
         # 更新EMA
         if self.ema_ofi is None:
@@ -276,6 +279,9 @@ class RealOFICalculator:
         else:
             a = self.ema_alpha
             self.ema_ofi = a * ofi_val + (1.0 - a) * self.ema_ofi
+        
+        # 更新OFI历史（放在Z-score计算后，确保"上一窗口"口径）
+        self.ofi_hist.append(ofi_val)
 
         return {
             "symbol": self.symbol,
@@ -289,6 +295,7 @@ class RealOFICalculator:
                 "weights": list(self.w),
                 "bad_points": self.bad_points,
                 "warmup": warmup,
+                "std_zero": std_zero,  # 新增：标准差为0标记
             },
         }
 
