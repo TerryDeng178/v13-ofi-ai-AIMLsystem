@@ -6,12 +6,39 @@ Real OFI Calculator - Task 1.2.1
 功能：
 - 基于订单簿快照计算OFI (Order Flow Imbalance)
 - 5档深度加权计算
-- Z-score标准化
+- Z-score标准化（"上一窗口"基线 + std_zero标记）
 - EMA平滑
 - 纯计算，无I/O操作
 
+核心实现要点：
+1. 权重与档位：
+   - 默认权重 [0.4, 0.25, 0.2, 0.1, 0.05]
+   - 按K档裁剪/填充并归一化，负值截为0，权重和为1
+
+2. 输入清洗：
+   - _pad_snapshot 保障价格为有限值、数量非负
+   - 异常数据计入 bad_points
+
+3. OFI核心计算：
+   - 逐档计算 Δbid_qty_k / Δask_qty_k
+   - comp = w_k * (Δb - Δa)
+   - OFI = Σ comp
+
+4. Z-score（优化版）：
+   - 基线="上一窗口"（不包含当前ofi），避免当前值稀释
+   - warmup_threshold = max(5, z_window//5)，不足返回 z_ofi=None
+   - std <= 1e-9 则 z_ofi=0.0 且 meta.std_zero=True
+
+5. EMA：
+   - ema_alpha可配，首次用当前ofi初始化，其后标准递推
+
+6. 状态与边界：
+   - reset()/get_state() 可观测
+   - L2增量模式显式 NotImplementedError（后续任务再做）
+
 作者: V13 OFI+CVD+AI System
 创建时间: 2025-10-17
+最后优化: 2025-10-17 (Z-score "上一窗口"基线)
 """
 from __future__ import annotations
 from collections import deque
