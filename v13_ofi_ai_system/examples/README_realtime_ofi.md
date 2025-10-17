@@ -365,6 +365,7 @@ autostart=true
 autorestart=true
 stderr_logfile=/var/log/ofi.err.log
 stdout_logfile=/var/log/ofi.out.log
+environment=API_KEY="%(ENV_API_KEY)s",API_SECRET="%(ENV_API_SECRET)s"
 ```
 
 ### 4. 资源限制
