@@ -28,7 +28,7 @@
 - 📄 指标快照1: `v13_ofi_ai_system/data/order_book/metrics_snapshot_t1789s.json`
 - 📄 指标快照2: `v13_ofi_ai_system/data/order_book/metrics_snapshot_t1800s.json`
 - 📄 NDJSON数据: `v13_ofi_ai_system/data/order_book/ethusdt_depth.ndjson.gz` (~1.2MB)
-- 📄 验收报告: `v13_ofi_ai_system/TASKS/Stage1_真实OFI核心/✅Task_1.1.6_测试和验证.md`
+- 📄 验收报告: `v13_ofi_ai_system/TASKS/Stage1_真实OFI+CVD核心/✅Task_1.1.6_测试和验证.md`
 
 **最终SUMMARY输出**:
 ```
@@ -686,7 +686,7 @@ print(f"最大延迟: {max(latencies):.2f}ms")
 
 ## 📚 相关文档
 
-- **任务卡**: `v13_ofi_ai_system/TASKS/Stage1_真实OFI核心/✅Task_1.1.6_测试和验证.md`
+- **任务卡**: `v13_ofi_ai_system/TASKS/Stage1_真实OFI+CVD核心/✅Task_1.1.6_测试和验证.md`
 - **项目规则**: `v13_ofi_ai_system/📜PROJECT_RULES.md`
 - **异步日志模块**: `v13_ofi_ai_system/src/utils/async_logging.py`
 

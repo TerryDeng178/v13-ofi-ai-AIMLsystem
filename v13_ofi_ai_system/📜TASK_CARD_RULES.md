@@ -351,8 +351,8 @@
 #### 2. 重命名任务文件（加上✅前缀）
 ```bash
 # 在文件名前加上✅标记
-git mv "TASKS/Stage1_真实OFI核心/Task_1.1.3_实现订单簿数据解析.md" \
-       "TASKS/Stage1_真实OFI核心/✅Task_1.1.3_实现订单簿数据解析.md"
+git mv "TASKS/Stage1_真实OFI+CVD核心/Task_1.1.3_实现订单簿数据解析.md" \
+       "TASKS/Stage1_真实OFI+CVD核心/✅Task_1.1.3_实现订单簿数据解析.md"
 ```
 
 #### 3. 主任务卡进度表格
