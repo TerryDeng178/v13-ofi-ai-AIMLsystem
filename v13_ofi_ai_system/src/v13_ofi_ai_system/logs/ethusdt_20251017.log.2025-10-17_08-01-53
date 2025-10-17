@@ -1,0 +1,24 @@
+2025-10-17 08:01:53,344 DEBUG LOB[ethusdt] - Received message (length=191)
+2025-10-17 08:01:53,344 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76579882542, u=76579882542, pu=76579879922
+2025-10-17 08:02:49,024 INFO LOB[ethusdt] - Initialized BinanceOrderBookStream
+2025-10-17 08:02:49,024 INFO LOB[ethusdt] - REST snapshot URL: https://fapi.binance.com/fapi/v1/depth?symbol=ETHUSDT&limit=1000
+2025-10-17 08:02:49,024 INFO LOB[ethusdt] - WebSocket URL:     wss://fstream.binancefuture.com/stream?streams=ethusdt@depth@100ms
+2025-10-17 08:02:49,024 INFO LOB[ethusdt] - Log file: C:\Users\user\Desktop\ofi_cvd_framework\ofi_cvd_framework\v13_ofi_ai_system\src\v13_ofi_ai_system\logs\ethusdt_20251017.log
+2025-10-17 08:02:49,025 INFO LOB[ethusdt] - ============================================================
+2025-10-17 08:02:49,025 INFO LOB[ethusdt] - Start Binance WebSocket client
+2025-10-17 08:02:49,025 INFO LOB[ethusdt] - Symbol: ETHUSDT depth=5 url=wss://fstream.binancefuture.com/stream?streams=ethusdt@depth@100ms
+2025-10-17 08:02:49,025 INFO LOB[ethusdt] - Auto reconnect: on
+2025-10-17 08:02:49,025 INFO LOB[ethusdt] - ============================================================
+2025-10-17 08:02:49,368 INFO LOB[ethusdt] - WebSocket opened
+2025-10-17 08:02:49,673 INFO LOB[ethusdt] - Loaded REST snapshot lastUpdateId=8904714952685
+2025-10-17 08:02:50,201 DEBUG LOB[ethusdt] - Received message (length=210)
+2025-10-17 08:02:50,201 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76580222296, u=76580222434, pu=76580211705
+2025-10-17 08:02:50,201 INFO LOB[ethusdt] - Started streaming from first message: U=76580222296, u=76580222434, pu=76580211705
+2025-10-17 08:02:50,202 INFO LOB[ethusdt] - SUMMARY | t=1s | msgs=1 | rate=0.85/s | p50=79.0 p95=79.0 p99=79.0 | breaks=0 resyncs=0 reconnects=0 | batch_span_p95=139 max=139 | log_q_p95=3 max=7 drops=0
+2025-10-17 08:02:50,203 DEBUG LOB[ethusdt] - metrics.json updated
+2025-10-17 08:02:50,473 DEBUG LOB[ethusdt] - Received message (length=191)
+2025-10-17 08:02:50,473 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76580223352, u=76580223443, pu=76580222434
+2025-10-17 08:02:50,580 DEBUG LOB[ethusdt] - Received message (length=210)
+2025-10-17 08:02:50,581 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76580223900, u=76580224018, pu=76580223443
+2025-10-17 08:02:52,891 DEBUG LOB[ethusdt] - Received message (length=210)
+2025-10-17 08:02:52,891 DEBUG LOB[ethusdt] - Message data keys: ['e', 'E', 'T', 's', 'U', 'u', 'pu', 'b', 'a'], U=76580235722, u=76580235790, pu=76580224018

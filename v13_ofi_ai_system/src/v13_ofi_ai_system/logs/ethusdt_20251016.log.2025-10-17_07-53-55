@@ -1,0 +1,11 @@
+2025-10-17 07:53:54,642 INFO LOB[ethusdt] - Initialized BinanceOrderBookStream
+2025-10-17 07:53:54,642 INFO LOB[ethusdt] - REST snapshot URL: https://fapi.binance.com/fapi/v1/depth?symbol=ETHUSDT&limit=1000
+2025-10-17 07:53:54,643 INFO LOB[ethusdt] - WebSocket URL:     wss://fstream.binancefuture.com/stream?streams=ethusdt@depth@100ms
+2025-10-17 07:53:54,643 INFO LOB[ethusdt] - Log file: C:\Users\user\Desktop\ofi_cvd_framework\ofi_cvd_framework\v13_ofi_ai_system\src\v13_ofi_ai_system\logs\ethusdt_20251016.log
+2025-10-17 07:53:54,643 INFO LOB[ethusdt] - ============================================================
+2025-10-17 07:53:54,643 INFO LOB[ethusdt] - Start Binance WebSocket client
+2025-10-17 07:53:54,643 INFO LOB[ethusdt] - Symbol: ETHUSDT depth=5 url=wss://fstream.binancefuture.com/stream?streams=ethusdt@depth@100ms
+2025-10-17 07:53:54,643 INFO LOB[ethusdt] - Auto reconnect: on
+2025-10-17 07:53:54,643 INFO LOB[ethusdt] - ============================================================
+2025-10-17 07:53:54,963 INFO LOB[ethusdt] - WebSocket opened
+2025-10-17 07:53:55,276 INFO LOB[ethusdt] - Loaded REST snapshot lastUpdateId=8904652664631
