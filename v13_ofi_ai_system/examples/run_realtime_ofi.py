@@ -5,7 +5,7 @@ run_realtime_ofi.py — Realtime OFI pipeline (WebSocket + Calculator)
 Features:
 - Works with a real WebSocket stream OR a local `--demo` generator
 - Parses incoming messages into (bids, asks) top-K, then feeds RealOFICalculator
-- Prints OFI / Z / EMA and meta flags (warmup, std_zero)
+- Logs OFI / Z / EMA and meta flags (warmup, std_zero) with rate limiting
 - Includes reconnection, heartbeat timeout, backpressure protection, perf stats, graceful shutdown
 
 Usage:
@@ -16,6 +16,9 @@ Usage:
     export WS_URL="wss://your-provider/your-stream"
     export SYMBOL="BTCUSDT"
     python run_realtime_ofi.py
+    
+  Control log level:
+    LOG_LEVEL=DEBUG python run_realtime_ofi.py --demo
 """
 import asyncio
 import json
@@ -24,8 +27,10 @@ import signal
 import time
 import math
 import random
-from dataclasses import dataclass
-from typing import List, Tuple, Optional
+import logging
+from dataclasses import dataclass, field
+from typing import List, Tuple, Optional, Dict
+from collections import defaultdict
 
 # === Import RealOFICalculator from project or local ===
 import sys
@@ -54,6 +59,15 @@ SYMBOL = os.getenv("SYMBOL", "DEMO-USD")
 WS_URL = os.getenv("WS_URL", "")  # if empty -> demo mode
 Z_WINDOW = int(os.getenv("Z_WINDOW", "300"))
 EMA_ALPHA = float(os.getenv("EMA_ALPHA", "0.2"))
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+
+# === Setup logging ===
+logging.basicConfig(
+    level=getattr(logging, LOG_LEVEL, logging.INFO),
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger(__name__)
 
 @dataclass
 class PerfStats:
@@ -77,6 +91,36 @@ class PerfStats:
         snap = {"window_s": round(win,1), "n": len(arr), "p50_ms": pct(50), "p95_ms": pct(95)}
         self.last_reset, self.samples = now, []
         return snap
+
+@dataclass
+class RateLimiter:
+    """Rate limiter for log messages (per-key throttling)"""
+    window_sec: float = 1.0  # Time window for rate limiting
+    max_per_window: int = 5  # Max messages per window per key
+    counters: Dict[str, int] = field(default_factory=lambda: defaultdict(int))
+    last_reset: Dict[str, float] = field(default_factory=dict)
+    suppressed: Dict[str, int] = field(default_factory=lambda: defaultdict(int))
+    
+    def should_log(self, key: str) -> bool:
+        """Check if a log message should be emitted for this key"""
+        now = time.time()
+        
+        # Reset window if expired
+        if key not in self.last_reset or (now - self.last_reset[key]) >= self.window_sec:
+            if self.suppressed[key] > 0:
+                # Log suppression summary at window end
+                logger.warning(f"[{key}] Suppressed {self.suppressed[key]} messages in last {self.window_sec}s")
+                self.suppressed[key] = 0
+            self.counters[key] = 0
+            self.last_reset[key] = now
+        
+        # Check rate limit
+        if self.counters[key] < self.max_per_window:
+            self.counters[key] += 1
+            return True
+        else:
+            self.suppressed[key] += 1
+            return False
 
 def topk_pad(levels: List[Tuple[float,float]], k: int, reverse: bool) -> List[Tuple[float,float]]:
     lv = []
@@ -147,7 +191,7 @@ async def ws_consume(url: str, queue: asyncio.Queue, stop: asyncio.Event):
     try:
         import websockets  # external lightweight dependency
     except ModuleNotFoundError:
-        print("[ERROR] websockets not installed. Use: pip install websockets  (or run with --demo)")
+        logger.error("websockets not installed. Use: pip install websockets  (or run with --demo)")
         stop.set()
         return
 
@@ -155,11 +199,11 @@ async def ws_consume(url: str, queue: asyncio.Queue, stop: asyncio.Event):
     reconnect_count = 0
     while not stop.is_set():
         try:
-            print(f"[INFO] Connecting to WebSocket: {url} (attempt #{reconnect_count+1})")
+            logger.info(f"Connecting to WebSocket: {url} (attempt #{reconnect_count+1})")
             async with websockets.connect(url, ping_interval=20, close_timeout=5) as ws:
                 backoff = 1
                 if reconnect_count > 0:
-                    print(f"[INFO] Reconnected successfully after {reconnect_count} attempts")
+                    logger.info(f"Reconnected successfully after {reconnect_count} attempts")
                 reconnect_count = 0
                 # TODO: send subscription if needed
                 while not stop.is_set():
@@ -167,25 +211,28 @@ async def ws_consume(url: str, queue: asyncio.Queue, stop: asyncio.Event):
                         msg = await asyncio.wait_for(ws.recv(), timeout=60)  # heartbeat timeout
                         await queue.put(msg)
                     except asyncio.TimeoutError:
-                        print("[WARN] No data for 60s, triggering reconnect (heartbeat timeout)")
+                        logger.warning("No data for 60s, triggering reconnect (heartbeat timeout)")
                         raise  # Force reconnection
         except asyncio.TimeoutError:
             reconnect_count += 1
-            print(f"[WARN] WS heartbeat timeout; reconnect in {backoff}s")
+            logger.warning(f"WS heartbeat timeout; reconnect in {backoff}s")
             await asyncio.sleep(backoff)
             backoff = min(backoff*2, 30)
         except Exception as e:
             reconnect_count += 1
-            print(f"[WARN] WS disconnected: {type(e).__name__}: {e}; reconnect in {backoff}s (backoff={backoff}s, max=30s)")
+            logger.warning(f"WS disconnected: {type(e).__name__}: {e}; reconnect in {backoff}s")
             await asyncio.sleep(backoff)
             backoff = min(backoff*2, 30)
 
 async def printer(oci: RealOFICalculator, queue: asyncio.Queue, stop: asyncio.Event):
     perf = PerfStats()
+    rate_limiter = RateLimiter(window_sec=1.0, max_per_window=5)  # Max 5 WARN/ERROR per second per type
     last_stat = time.time()
     dropped = 0
     parse_errors = 0
     processed = 0
+    ofi_print_interval = 10  # Print OFI every N messages (reduce spam in high-frequency mode)
+    
     while not stop.is_set():
         try:
             msg = await queue.get()
@@ -196,13 +243,17 @@ async def printer(oci: RealOFICalculator, queue: asyncio.Queue, stop: asyncio.Ev
                 skip_count += 1
             if skip_count > 0:
                 dropped += skip_count
-                print(f"[WARN] Backpressure: skipped {skip_count} stale frames (queue depth was {skip_count+1})")
+                # Rate-limited backpressure warning
+                if rate_limiter.should_log("backpressure"):
+                    logger.warning(f"Backpressure: skipped {skip_count} stale frames (total dropped: {dropped})")
             
             t0 = time.perf_counter()
             parsed = parse_message(msg)
             if parsed is None:
                 parse_errors += 1
-                print(f"[ERROR] Failed to parse message (total parse errors: {parse_errors})")
+                # Rate-limited parse error
+                if rate_limiter.should_log("parse_error"):
+                    logger.error(f"Failed to parse message (total errors: {parse_errors})")
                 continue
             bids, asks = parsed
             ret = oci.update_with_snapshot(bids=bids, asks=asks)
@@ -210,24 +261,25 @@ async def printer(oci: RealOFICalculator, queue: asyncio.Queue, stop: asyncio.Ev
             perf.add(dt_ms)
             processed += 1
 
-            z = ret.get("z_ofi")
-            warm = ret.get("meta",{}).get("warmup")
-            stdz = ret.get("meta",{}).get("std_zero")
-            print(f"{ret.get('symbol', 'N/A')} OFI={ret['ofi']:+.5f}  Z={('None' if z is None else f'{z:+.3f}')}  "
-                  f"EMA={ret['ema_ofi']:+.5f}  warmup={warm}  std_zero={stdz}")
+            # Print OFI at reduced frequency (every Nth message)
+            if processed % ofi_print_interval == 0 or processed <= 10:  # Always print first 10
+                z = ret.get("z_ofi")
+                warm = ret.get("meta",{}).get("warmup")
+                stdz = ret.get("meta",{}).get("std_zero")
+                logger.info(f"{ret.get('symbol', 'N/A')} OFI={ret['ofi']:+.5f}  Z={('None' if z is None else f'{z:+.3f}')}  "
+                          f"EMA={ret['ema_ofi']:+.5f}  warmup={warm}  std_zero={stdz}")
 
+            # Periodic stats (every 60s)
             if time.time() - last_stat > 60:
                 stat = perf.snapshot_and_reset()
                 queue_depth = queue.qsize()
-                print(f"[STAT] window={stat['window_s']}s processed={processed} p50={stat['p50_ms']}ms p95={stat['p95_ms']}ms "
-                      f"dropped={dropped} parse_errors={parse_errors} queue_depth={queue_depth}")
+                logger.info(f"STATS | window={stat['window_s']}s processed={processed} p50={stat['p50_ms']}ms p95={stat['p95_ms']}ms "
+                          f"dropped={dropped} parse_errors={parse_errors} queue_depth={queue_depth}")
                 last_stat = time.time()
         except asyncio.TimeoutError:
-            print("[WARN] consume timeout; continue")
+            logger.warning("consume timeout; continue")
         except Exception as e:
-            print(f"[ERROR] consume loop exception: {type(e).__name__}: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.error(f"consume loop exception: {type(e).__name__}: {e}", exc_info=True)
 
 async def main(demo: bool = False):
     stop = asyncio.Event()
@@ -237,40 +289,40 @@ async def main(demo: bool = False):
     if os.name == 'nt':  # Windows
         # Windows doesn't support loop.add_signal_handler for SIGTERM
         def signal_handler(sig, frame):
-            print(f"\n[INFO] Received signal {sig}, initiating graceful shutdown...")
+            logger.info(f"Received signal {sig}, initiating graceful shutdown...")
             stop.set()
         signal.signal(signal.SIGINT, signal_handler)
-        print("[INFO] Signal handlers configured (Windows mode: SIGINT only)")
+        logger.info("Signal handlers configured (Windows mode: SIGINT only)")
     else:  # Unix-like
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, lambda s=sig: (
-                print(f"\n[INFO] Received signal {s}, initiating graceful shutdown..."),
+                logger.info(f"Received signal {s}, initiating graceful shutdown..."),
                 stop.set()
             )[1])
-        print("[INFO] Signal handlers configured (Unix mode: SIGINT + SIGTERM)")
+        logger.info("Signal handlers configured (Unix mode: SIGINT + SIGTERM)")
 
     q: asyncio.Queue = asyncio.Queue(maxsize=1024)
     cfg = OFIConfig(levels=K_LEVELS, z_window=Z_WINDOW, ema_alpha=EMA_ALPHA)
     oci = RealOFICalculator(symbol=SYMBOL, cfg=cfg)
     
-    print(f"[INFO] OFI Calculator initialized: symbol={SYMBOL}, K={K_LEVELS}, z_window={Z_WINDOW}, ema_alpha={EMA_ALPHA}")
+    logger.info(f"OFI Calculator initialized: symbol={SYMBOL}, K={K_LEVELS}, z_window={Z_WINDOW}, ema_alpha={EMA_ALPHA}")
 
     if demo or not WS_URL:
         demo_hz = 50  # Change to 100 for high-load testing (100 msgs/s)
         prod = asyncio.create_task(demo_source(q, hz=demo_hz))
-        print(f"[INFO] Running in DEMO mode (local synthetic orderbook, {demo_hz} Hz = {demo_hz} msgs/s)")
+        logger.info(f"Running in DEMO mode (local synthetic orderbook, {demo_hz} Hz = {demo_hz} msgs/s)")
     else:
         prod = asyncio.create_task(ws_consume(WS_URL, q, stop))
-        print(f"[INFO] Connecting to real WebSocket: {WS_URL}")
+        logger.info(f"Connecting to real WebSocket: {WS_URL}")
     cons = asyncio.create_task(printer(oci, q, stop))
 
     try:
         await stop.wait()
     except KeyboardInterrupt:
-        print("\n[INFO] KeyboardInterrupt received, shutting down...")
+        logger.info("KeyboardInterrupt received, shutting down...")
         stop.set()
     
-    print("[INFO] Cancelling tasks...")
+    logger.info("Cancelling tasks...")
     prod.cancel()
     cons.cancel()
     results = await asyncio.gather(prod, cons, return_exceptions=True)
@@ -278,11 +330,11 @@ async def main(demo: bool = False):
     # Check for pending tasks
     pending = [t for t in asyncio.all_tasks() if not t.done()]
     if pending:
-        print(f"[WARN] {len(pending)} pending tasks at shutdown: {pending}")
+        logger.warning(f"{len(pending)} pending tasks at shutdown: {pending}")
     else:
-        print("[INFO] All tasks completed cleanly")
+        logger.info("All tasks completed cleanly")
     
-    print("[INFO] Graceful shutdown completed")
+    logger.info("Graceful shutdown completed")
 
 if __name__ == "__main__":
     import argparse

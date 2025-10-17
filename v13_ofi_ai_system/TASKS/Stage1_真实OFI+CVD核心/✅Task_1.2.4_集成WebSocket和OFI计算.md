@@ -204,19 +204,23 @@
 **是否可以继续下一个任务**: ✅ 是，可以继续Task_1.2.5
 
 ## 📊 实现统计
-- **代码行数**: 283行（run_realtime_ofi.py）
+- **代码行数**: 345行（run_realtime_ofi.py，含logging+限流）
 - **文档行数**: 356行（README_realtime_ofi.md）
 - **测试验证**: 7项功能全部通过
 - **性能**: 延迟 < 1ms @ 50 msgs/s (DEMO模式，可调至100 msgs/s)
 - **跨平台**: Windows + Unix信号处理
+- **日志系统**: logging模块 + 智能限流（最多5条/秒/类型）
 
 ## 📦 交付物清单
-1. **核心脚本**: `v13_ofi_ai_system/examples/run_realtime_ofi.py` (272行) ✅
-   - `parse_message()` 适配层（第98-110行）
-   - 自动重连 + 心跳检测（第126-161行）
-   - 背压保护机制（第172-179行）
-   - 性能指标输出（第199-203行）
-   - 跨平台信号处理（第216-230行）
+1. **核心脚本**: `v13_ofi_ai_system/examples/run_realtime_ofi.py` (345行) ✅
+   - `parse_message()` 适配层（第140-152行）
+   - 自动重连 + 心跳检测（第189-225行）
+   - 背压保护机制（第240-248行）
+   - 性能指标输出（第273-278行）
+   - 跨平台信号处理（第288-302行）
+   - **新增**: `RateLimiter` 限流类（第95-123行）
+   - **新增**: `logging` 系统（第65-70行，可配置LOG_LEVEL）
+   - **新增**: OFI降频打印（每10条打印1次，第234行）
    
 2. **README 文档**: `v13_ofi_ai_system/examples/README_realtime_ofi.md` (356行) ✅
    - 快速开始（DEMO + 真实WebSocket）
