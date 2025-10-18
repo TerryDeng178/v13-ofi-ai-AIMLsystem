@@ -19,8 +19,9 @@ sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 
 def main():
     parser = argparse.ArgumentParser(description="Analyze CVD data collected from binance_trade_stream.py")
-    parser.add_argument("--data", required=True, help="Path to parquet file or directory containing parquet files")
-    parser.add_argument("--out", default="v13_ofi_ai_system/figs_cvd", help="Output directory for figures")
+    # 支持两种参数名（兼容文档和旧脚本）
+    parser.add_argument("--data", "--input", dest="data", required=True, help="Path to parquet file or directory containing parquet files")
+    parser.add_argument("--out", "--output-dir", dest="out", default="v13_ofi_ai_system/figs_cvd", help="Output directory for figures")
     parser.add_argument("--report", default="v13_ofi_ai_system/docs/reports/CVD_TEST_REPORT.md", help="Output report file")
     args = parser.parse_args()
     
@@ -91,9 +92,8 @@ def main():
     # 分析模式连续性检查 (p99_interarrival ≤ 5000ms 且 gaps_over_10s == 0)
     gaps_over_10s = (ts_diff_ms > 10000).sum()
     results['gaps_over_10s'] = gaps_over_10s
-    results['continuity_pass'] = results.get('gap_p99_ms', 0) <= 5000 and gaps_over_10s == 0
     
-    # 连续性统计
+    # 连续性统计（必须先计算gap_p99_ms）
     if len(ts_diff_ms) > 1:
         gap_p99 = ts_diff_ms.quantile(0.99)
         gap_p999 = ts_diff_ms.quantile(0.999)
@@ -102,6 +102,9 @@ def main():
     else:
         results['gap_p99_ms'] = 0
         results['gap_p999_ms'] = 0
+    
+    # 分析模式连续性判定（在gap_p99_ms计算之后）
+    results['continuity_pass'] = results['gap_p99_ms'] <= 5000 and gaps_over_10s == 0
     
     # 分析模式时长检查 (≥30分钟)
     results['duration_pass'] = time_span_hours >= 0.5  # 30分钟 = 0.5小时
@@ -281,7 +284,7 @@ def main():
     
     print(f"抽样大小: {len(df_sample)} ({len(df_sample)/len(df)*100:.2f}%)")
     print(f"逐笔守恒错误: {continuity_mismatches}/{len(df_sample)-1} ({'✓ 通过' if continuity_mismatches == 0 else '✗ 未达标'})")
-    print(f"首尾守恒误差: {conservation_error:.2e} ({'✓ 通过' if conservation_error < 1e-6 else '✗ 未达标'})")
+    print(f"首尾守恒误差: {conservation_error:.2e} (容差: {conservation_tolerance:.2e}) ({'✓ 通过' if conservation_error < conservation_tolerance else '✗ 未达标'})")
     
     # 6. 稳定性
     print("\n" + "="*60)
@@ -547,8 +550,9 @@ def main():
         f.write("## 验收标准对照结果\n\n")
         
         f.write("### 1. 时长与连续性\n")
-        f.write(f"- [{'x' if results['duration_pass'] else ' '}] 运行时长: {results['time_span_minutes']:.1f}分钟 (≥120分钟)\n")
-        f.write(f"- [{'x' if results['continuity_pass'] else ' '}] max_gap_ms: {max_gap:.2f}ms (≤2000ms)\n\n")
+        f.write(f"- [{'x' if results['duration_pass'] else ' '}] 运行时长: {results['time_span_minutes']:.1f}分钟 (≥30分钟，分析模式基线)\n")
+        f.write(f"- [{'x' if results['continuity_pass'] else ' '}] p99_interarrival: {results['gap_p99_ms']:.2f}ms (≤5000ms)\n")
+        f.write(f"- [{'x' if gaps_over_10s == 0 else ' '}] gaps_over_10s: {gaps_over_10s} (==0)\n\n")
         
         f.write("### 2. 数据质量\n")
         f.write(f"- [{'x' if results['parse_errors_pass'] else ' '}] parse_errors: {results['parse_errors']} (==0)\n")
@@ -566,9 +570,10 @@ def main():
         
         # P0-B：根据实际检查类型调整报告说明
         check_method = "全量" if len(df) <= 10000 else "抽样1%"
+        conservation_pass = results['cvd_continuity']['conservation_error'] < results['cvd_continuity']['conservation_tolerance']
         f.write(f"### 5. 一致性验证（{check_method}检查）\n")
         f.write(f"- [{'x' if results['cvd_continuity']['pass'] else ' '}] 逐笔守恒: {results['cvd_continuity']['continuity_mismatches']} 错误 (容差≤1e-9)\n")
-        f.write(f"- [{'x' if results['cvd_continuity']['conservation_error'] < 1e-6 else ' '}] 首尾守恒误差: {results['cvd_continuity']['conservation_error']:.2e} (≤1e-6)\n")
+        f.write(f"- [{'x' if conservation_pass else ' '}] 首尾守恒误差: {results['cvd_continuity']['conservation_error']:.2e} (相对容差: {results['cvd_continuity']['conservation_tolerance']:.2e})\n")
         f.write(f"- 检查样本: {results['cvd_continuity']['sample_size']} 笔 ({check_method})\n\n")
         
         f.write("### 6. 稳定性\n")

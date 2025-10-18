@@ -56,6 +56,10 @@ class CVDConfig:
     freeze_min: int = 50          # Z-score最小样本数
     stale_threshold_ms: int = 5000 # Stale冻结阈值（毫秒）
     
+    # 空窗后冻结配置（事件时间间隔）
+    soft_freeze_ms: int = 4000    # 软冻结阈值（4-5s，首1笔冻结）
+    hard_freeze_ms: int = 5000    # 硬冻结阈值（>5s，首2笔冻结）
+    
     # Step 1 稳健尺度地板配置
     scale_mode: str = "ewma"      # 尺度模式: "ewma" | "hybrid"
     ewma_fast_hl: int = 80        # 快EWMA半衰期（笔数）
@@ -146,9 +150,20 @@ class RealCVDCalculator:
         print(f"  WINSOR_LIMIT={self.cfg.winsor_limit}")
         print(f"  STALE_THRESHOLD_MS={self.cfg.stale_threshold_ms}")
         print(f"  FREEZE_MIN={self.cfg.freeze_min}")
+        print(f"  SOFT_FREEZE_MS={self.cfg.soft_freeze_ms}")  # 软冻结阈值
+        print(f"  HARD_FREEZE_MS={self.cfg.hard_freeze_ms}")  # 硬冻结阈值
         print(f"  SCALE_MODE={self.cfg.scale_mode}")
         print(f"  EWMA_FAST_HL={self.cfg.ewma_fast_hl}")
-        print(f"  SCALE_FAST_WEIGHT={self.cfg.scale_fast_weight} (slow={self.cfg.scale_slow_weight})")
+        # 打印归一化后的权重
+        w_fast = max(0.0, min(1.0, self.cfg.scale_fast_weight))
+        w_slow = max(0.0, min(1.0, self.cfg.scale_slow_weight))
+        w_sum = w_fast + w_slow
+        if w_sum > 1e-9:
+            w_fast_norm, w_slow_norm = w_fast / w_sum, w_slow / w_sum
+            print(f"  SCALE_FAST_WEIGHT={self.cfg.scale_fast_weight} → {w_fast_norm:.3f} (归一化后)")
+            print(f"  SCALE_SLOW_WEIGHT={self.cfg.scale_slow_weight} → {w_slow_norm:.3f} (归一化后)")
+        else:
+            print(f"  SCALE_FAST_WEIGHT={self.cfg.scale_fast_weight} (slow={self.cfg.scale_slow_weight})")
         print(f"  MAD_WINDOW_TRADES={self.cfg.mad_window_trades}")
         print(f"  MAD_SCALE_FACTOR={self.cfg.mad_scale_factor}")
         print(f"  MAD_MULTIPLIER={self.cfg.mad_multiplier}")
@@ -532,12 +547,12 @@ class RealCVDCalculator:
             hasattr(self, '_prev_event_time_ms') and 
             self._prev_event_time_ms is not None):
             interarrival_ms = self._last_event_time_ms - self._prev_event_time_ms
-            if interarrival_ms > 5000:
-                # 硬冻结：E间隔 > 5s → 首 2 笔 z=None
+            if interarrival_ms > self.cfg.hard_freeze_ms:
+                # 硬冻结：E间隔 > hard_freeze_ms → 首 2 笔 z=None
                 self._post_stale_remaining = 2
                 return None, False, False
-            elif interarrival_ms > 4000:
-                # 软冻结：4.0s < E间隔 ≤ 5.0s → 首 1 笔 z=None
+            elif interarrival_ms > self.cfg.soft_freeze_ms:
+                # 软冻结：soft_freeze_ms < E间隔 ≤ hard_freeze_ms → 首 1 笔 z=None
                 self._post_stale_remaining = 1
                 return None, False, False
             

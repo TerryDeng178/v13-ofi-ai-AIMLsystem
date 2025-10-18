@@ -341,6 +341,9 @@ async def processor(
         winsor_limit=float(os.getenv("WINSOR_LIMIT", "8.0")),
         freeze_min=int(os.getenv("FREEZE_MIN", "80")),  # Step 1.6: 80
         stale_threshold_ms=int(os.getenv("STALE_THRESHOLD_MS", "5000")),
+        # 空窗后冻结配置（从env读取）
+        soft_freeze_ms=int(os.getenv("SOFT_FREEZE_MS", "4000")),  # 软冻结阈值
+        hard_freeze_ms=int(os.getenv("HARD_FREEZE_MS", "5000")),  # 硬冻结阈值
         # Step 1.6 稳健尺度地板参数
         scale_mode=os.getenv("SCALE_MODE", "hybrid"),  # Step 1.6: hybrid模式
         ewma_fast_hl=int(os.getenv("EWMA_FAST_HL", "80")),
