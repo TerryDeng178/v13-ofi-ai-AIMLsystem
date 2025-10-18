@@ -48,6 +48,13 @@ class CVDConfig:
     ema_alpha: float = 0.2        # EMA平滑系数
     use_tick_rule: bool = True    # 无 is_buy 时回退到 Tick Rule
     warmup_min: int = 5           # 冷启动阈值下限
+    
+    # P1.1 Delta-Z配置
+    z_mode: str = "level"         # Z-score模式: "level"(旧版) | "delta"(新版)
+    half_life_trades: int = 300   # Delta-Z半衰期（笔数）
+    winsor_limit: float = 8.0     # Z-score截断阈值
+    freeze_min: int = 50          # Z-score最小样本数
+    stale_threshold_ms: int = 5000 # Stale冻结阈值（毫秒）
 
 class RealCVDCalculator:
     """
@@ -74,7 +81,9 @@ class RealCVDCalculator:
     
     __slots__ = (
         "symbol", "cfg", "cvd", "ema_cvd", "_hist", 
-        "bad_points", "_last_price", "_last_event_time_ms", "_last_side"
+        "bad_points", "_last_price", "_last_event_time_ms", "_last_side",
+        # P1.1 Delta-Z状态
+        "_ewma_abs_delta", "_trades_count", "_alpha", "_last_delta"
     )
     
     def __init__(self, symbol: str, cfg: Optional[CVDConfig] = None) -> None:
@@ -94,6 +103,12 @@ class RealCVDCalculator:
         self._last_price: Optional[float] = None
         self._last_event_time_ms: Optional[int] = None
         self._last_side: Optional[bool] = None  # 用于 Tick Rule price==last_price 情况
+        
+        # P1.1 Delta-Z状态初始化
+        self._ewma_abs_delta: float = 0.0
+        self._trades_count: int = 0
+        self._alpha: float = 1 - math.exp(math.log(0.5) / max(1, self.cfg.half_life_trades))
+        self._last_delta: Optional[float] = None
 
     # 状态管理
     def reset(self) -> None:
@@ -107,6 +122,11 @@ class RealCVDCalculator:
         self._last_price = None
         self._last_event_time_ms = None
         self._last_side = None
+        
+        # P1.1 Delta-Z状态重置
+        self._ewma_abs_delta = 0.0
+        self._trades_count = 0
+        self._last_delta = None
 
     def get_state(self) -> Dict[str, Any]:
         """
@@ -115,7 +135,11 @@ class RealCVDCalculator:
         返回:
             Dict: 包含symbol, cvd, z_cvd, ema_cvd等状态信息
         """
-        warmup, std_zero, z_val = self._peek_z()
+        if self.cfg.z_mode == "delta":
+            warmup, std_zero, z_val = self._peek_delta_z()
+        else:
+            warmup, std_zero, z_val = self._peek_z()
+            
         return {
             "symbol": self.symbol,
             "cvd": self.cvd,
@@ -127,6 +151,10 @@ class RealCVDCalculator:
                 "std_zero": std_zero,
                 "last_price": self._last_price,
                 "event_time_ms": self._last_event_time_ms,
+                "z_mode": self.cfg.z_mode,
+                "delta": self._last_delta,
+                "ewma_abs_delta": self._ewma_abs_delta,
+                "trades_count": self._trades_count,
             },
         }
     
@@ -187,6 +215,8 @@ class RealCVDCalculator:
         # 更新累计
         delta = float(qty) if side else -float(qty)
         self.cvd += delta
+        self._last_delta = delta
+        self._trades_count += 1
 
         # EMA
         if self.ema_cvd is None:
@@ -202,9 +232,16 @@ class RealCVDCalculator:
             self._last_event_time_ms = int(event_time_ms)
         self._last_side = side  # 记录方向用于下次 Tick Rule
 
-        # Z-score：上一窗口为基线
-        self._hist.append(self.cvd)
-        z_val, warmup, std_zero = self._z_last_excl()
+        # Z-score计算：根据模式选择
+        if self.cfg.z_mode == "delta":
+            # P1.1 Delta-Z模式
+            self._hist.append(self.cvd)  # 保持历史记录用于兼容
+            z_val, warmup, std_zero = self._z_delta()
+        else:
+            # 原有Level-Z模式
+            self._hist.append(self.cvd)
+            z_val, warmup, std_zero = self._z_last_excl()
+            
         return self._result(z_val, warmup, std_zero, event_time_ms=event_time_ms)
 
     # 适配交易所消息格式
@@ -327,3 +364,100 @@ class RealCVDCalculator:
                 "event_time_ms": event_time_ms if event_time_ms is not None else self._last_event_time_ms,
             },
         }
+
+    # P1.1 Delta-Z核心计算方法
+    def _z_delta(self) -> Tuple[Optional[float], bool, bool]:
+        """
+        Delta-Z计算：z = ΔCVD / EWMA(|Δ|) + winsor + 暖启动/空窗冻结
+        
+        返回:
+            (z_val, warmup, std_zero)
+        """
+        if self._last_delta is None:
+            return None, True, False
+            
+        # 更新EWMA(|Δ|)稳健尺度
+        abs_delta = abs(self._last_delta)
+        if self._trades_count == 1:
+            self._ewma_abs_delta = abs_delta
+        else:
+            self._ewma_abs_delta = self._alpha * abs_delta + (1 - self._alpha) * self._ewma_abs_delta
+        
+        # 暖启动检查
+        if self._trades_count < self.cfg.freeze_min:
+            return None, True, False
+            
+        # 尺度零检查
+        if self._ewma_abs_delta <= 1e-9:
+            return None, False, True
+            
+        # Stale冻结检查：与上笔event_time_ms间隔 > stale_threshold_ms
+        if (self._last_event_time_ms is not None and 
+            self._trades_count > 1 and 
+            self._last_event_time_ms - (self._last_event_time_ms or 0) > self.cfg.stale_threshold_ms):
+            return None, False, False
+            
+        # 计算Delta-Z
+        z = self._last_delta / self._ewma_abs_delta
+        
+        # Winsorize截断
+        z = max(min(z, self.cfg.winsor_limit), -self.cfg.winsor_limit)
+        
+        return z, False, False
+
+    def _peek_delta_z(self) -> Tuple[bool, bool, Optional[float]]:
+        """
+        只读当前Delta-Z的估计（不改变状态），用于get_state
+        """
+        if self._last_delta is None:
+            return True, False, None
+            
+        # 暖启动检查
+        if self._trades_count < self.cfg.freeze_min:
+            return True, False, None
+            
+        # 尺度零检查
+        if self._ewma_abs_delta <= 1e-9:
+            return False, True, None
+            
+        # 计算Delta-Z
+        z = self._last_delta / self._ewma_abs_delta
+        
+        # Winsorize截断
+        z = max(min(z, self.cfg.winsor_limit), -self.cfg.winsor_limit)
+        
+        return False, False, z
+
+    def get_z_stats(self) -> Dict[str, Any]:
+        """
+        获取Z-score统计信息（P1.1新增方法）
+        
+        返回:
+            Dict: 包含Z-score相关统计信息
+        """
+        if self.cfg.z_mode == "delta":
+            warmup, std_zero, z_val = self._peek_delta_z()
+            return {
+                "z_mode": "delta",
+                "z_value": z_val,
+                "warmup": warmup,
+                "std_zero": std_zero,
+                "ewma_abs_delta": self._ewma_abs_delta,
+                "trades_count": self._trades_count,
+                "last_delta": self._last_delta,
+                "alpha": self._alpha,
+                "winsor_limit": self.cfg.winsor_limit,
+                "freeze_min": self.cfg.freeze_min,
+                "stale_threshold_ms": self.cfg.stale_threshold_ms,
+            }
+        else:
+            warmup, std_zero, z_val = self._peek_z()
+            return {
+                "z_mode": "level",
+                "z_value": z_val,
+                "warmup": warmup,
+                "std_zero": std_zero,
+                "hist_size": len(self._hist),
+                "z_window": self.cfg.z_window,
+                "warmup_min": self.cfg.warmup_min,
+            }

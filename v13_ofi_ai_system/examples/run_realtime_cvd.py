@@ -306,7 +306,14 @@ async def processor(
     metrics: MonitoringMetrics,
     records: List[CVDRecord],
 ):
-    cfg = CVDConfig()
+    # P1.1: 支持环境变量配置CVD计算器
+    cfg = CVDConfig(
+        z_mode=os.getenv("CVD_Z_MODE", "level"),
+        half_life_trades=int(os.getenv("HALF_LIFE_TRADES", "300")),
+        winsor_limit=float(os.getenv("WINSOR_LIMIT", "8.0")),
+        freeze_min=int(os.getenv("FREEZE_MIN", "50")),
+        stale_threshold_ms=int(os.getenv("STALE_THRESHOLD_MS", "5000")),
+    )
     calc = RealCVDCalculator(symbol=symbol, cfg=cfg)
     
     # P0-B: 初始化水位线缓冲
