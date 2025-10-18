@@ -1,18 +1,18 @@
 # Task 1.2.10 CVD计算测试报告
 
-**测试执行时间**: 2025-10-18 04:46:20
+**测试执行时间**: 2025-10-18 20:43:07
 
 **测试级别**: Gold（≥120分钟）
 
-**数据源**: `../data/cvd_p0b_quick_test`
+**数据源**: `../data/cvd_step_1_7b_microtune_ethusdt/cvd_ethusdt_20251018_204148.parquet`
 
 ---
 
 ## 测试摘要
 
-- **采集时长**: 4.9 分钟 (0.08 小时)
-- **数据点数**: 291 笔
-- **平均速率**: 1.00 笔/秒
+- **采集时长**: 19.9 分钟 (0.33 小时)
+- **数据点数**: 1,780 笔
+- **平均速率**: 1.49 笔/秒
 - **解析错误**: 0
 - **重连次数**: 0
 - **队列丢弃率**: 0.0000%
@@ -22,27 +22,27 @@
 ## 验收标准对照结果
 
 ### 1. 时长与连续性
-- [ ] 运行时长: 4.9分钟 (≥120分钟)
-- [ ] max_gap_ms: 6686.64ms (≤2000ms)
+- [ ] 运行时长: 19.9分钟 (≥120分钟)
+- [ ] max_gap_ms: 5783.91ms (≤2000ms)
 
 ### 2. 数据质量
 - [x] parse_errors: 0 (==0)
 - [x] queue_dropped_rate: 0.0000% (≤0.5%)
 
 ### 3. 性能指标
-- [ ] p95_latency: 5535.024ms (<300ms)
+- [ ] p95_latency: 4236.669ms (<300ms)
 
 ### 4. Z-score稳健性
-- [ ] median(|z_cvd|): 1.1689 (≤0.5)
-- [ ] IQR(z_cvd): 0.3968 (∈[1.0, 2.0])
-- [ ] P(|Z|>2): 9.09% (∈[1%, 8%])
-- [ ] P(|Z|>3): 3.46% (<1%)
+- [x] median(|z_cvd|): 0.0015 (≤0.5)
+- [x] IQR(z_cvd): 0.0044 (∈[1.0, 2.0])
+- [ ] P(|Z|>2): 10.35% (∈[1%, 8%])
+- [ ] P(|Z|>3): 8.29% (<1%)
 - [x] std_zero: 0 (==0)
 
 ### 5. 一致性验证（全量检查）
 - [ ] 逐笔守恒: 0 错误 (容差≤1e-9)
 - [ ] 首尾守恒误差: 6.00e-03 (≤1e-6)
-- 检查样本: 291 笔 (全量)
+- 检查样本: 1780 笔 (全量)
 
 ### 6. 稳定性
 - [x] 重连频率: 0.00次/小时 (≤3/小时)
@@ -52,34 +52,34 @@
 ## 图表
 
 ### 1. Z-score分布直方图
-![Z-score直方图](../../../../figs_cvd_p0b_quick/hist_z.png)
+![Z-score直方图](../../figs_cvd/hist_z.png)
 
 ### 2. CVD时间序列
-![CVD时间序列](../../../../figs_cvd_p0b_quick/cvd_timeseries.png)
+![CVD时间序列](../../figs_cvd/cvd_timeseries.png)
 
 ### 3. Z-score时间序列
-![Z-score时间序列](../../../../figs_cvd_p0b_quick/z_timeseries.png)
+![Z-score时间序列](../../figs_cvd/z_timeseries.png)
 
 ### 4. 延迟箱线图
-![延迟箱线图](../../../../figs_cvd_p0b_quick/latency_box.png)
+![延迟箱线图](../../figs_cvd/latency_box.png)
 
 ### 5. 消息到达间隔分布
-![Interarrival分布](../../../../figs_cvd_p0b_quick/interarrival_hist.png)
+![Interarrival分布](../../figs_cvd/interarrival_hist.png)
 
 **Interarrival统计**:
 - P50: 0.0ms
-- P95: 4110.0ms
-- P99: 5037.4ms
-- Max: 6686.6ms
+- P95: 3151.6ms
+- P99: 3856.2ms
+- Max: 5783.9ms
 
 ### 6. Event ID差值分布
-![Event ID差值](../../../../figs_cvd_p0b_quick/event_id_diff.png)
+![Event ID差值](../../figs_cvd/event_id_diff.png)
 
 **aggTradeId检查**:
 - 重复ID: 0 (0.000%)
 - 倒序ID: 0 (0.000%)
 - 大跳跃(>10k): 0
-- event_time_ms同毫秒: 15 (5.2%, 信息项)
+- event_time_ms同毫秒: 230 (12.9%, 信息项)
 
 ---
 
