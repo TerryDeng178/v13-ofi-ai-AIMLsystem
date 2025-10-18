@@ -152,10 +152,21 @@ class ConfigLoader:
     
     def _apply_env_overrides(self, config: Dict[str, Any]) -> Dict[str, Any]:
         """
-        应用环境变量覆盖
+        应用环境变量覆盖（支持任意深度）
         
-        环境变量格式: SECTION_KEY (大写，用下划线连接)
-        例如: PERFORMANCE_QUEUE_MAX_SIZE=10000
+        优先使用双下划线 `__` 作为层级分隔符（推荐）：
+            V13__performance__queue__max_size=100000  -> performance.queue.max_size
+            V13__logging__level=DEBUG                 -> logging.level
+            V13__features__verbose_logging=true       -> features.verbose_logging
+        
+        兼容旧格式（单下划线）：
+            - 前两段作为层级，其余段合并为叶子键（用下划线拼回）
+            - PERFORMANCE_QUEUE_MAX_SIZE -> performance.queue.max_size
+            - LOGGING_FILE_MAX_SIZE_MB   -> logging.file.max_size_mb
+        
+        规则：
+            - 仅覆盖已存在的配置项（避免误拼写污染配置）
+            - 根据参考值类型自动转换
         
         Args:
             config: 配置字典
@@ -163,36 +174,63 @@ class ConfigLoader:
         Returns:
             应用环境变量后的配置字典
         """
-        # 简单实现：支持两级配置
-        # 例如: PERFORMANCE_QUEUE_MAX_SIZE -> config['performance']['queue']['max_size']
-        
         for env_key, env_value in os.environ.items():
-            # 尝试解析为配置路径
-            parts = env_key.lower().split('_')
+            key_lower = env_key.lower()
+            
+            # 1) 新格式：双下划线分隔（推荐）
+            if "__" in env_key:
+                # 允许加项目前缀，如 V13__... 或 CFG__...
+                parts = [p for p in env_key.split("__") if p]
+                # 去掉可选前缀（不区分大小写）
+                while parts and parts[0].upper() in ("V13", "CFG", "CONFIG", "OFI", "CVD"):
+                    parts.pop(0)
+                if not parts:
+                    continue
+                path = [p.lower() for p in parts]
+                self._set_by_path(config, path, env_value)
+                continue
+            
+            # 2) 旧格式：单下划线（向后兼容）
+            parts = key_lower.split('_')
             if len(parts) >= 2:
-                try:
-                    # 尝试两级结构: section_key
-                    if len(parts) == 2:
-                        section, key = parts
-                        if section in config and key in config[section]:
-                            config[section][key] = self._convert_type(env_value, config[section][key])
-                            logger.debug(f"Environment override: {env_key} = {env_value}")
-                    
-                    # 尝试三级结构: section_subsection_key
-                    elif len(parts) == 3:
-                        section, subsection, key = parts
-                        if (section in config and 
-                            isinstance(config[section], dict) and
-                            subsection in config[section] and
-                            key in config[section][subsection]):
-                            config[section][subsection][key] = self._convert_type(
-                                env_value, config[section][subsection][key]
-                            )
-                            logger.debug(f"Environment override: {env_key} = {env_value}")
-                except Exception as e:
-                    logger.debug(f"Could not apply environment override {env_key}: {e}")
+                if len(parts) == 2:
+                    # section_key
+                    path = [parts[0], parts[1]]
+                else:
+                    # section_subsection_leaf(with_underscores)
+                    # 前两段作为层级，其余合并为叶子键
+                    section, subsection = parts[0], parts[1]
+                    leaf = '_'.join(parts[2:])
+                    path = [section, subsection, leaf]
+                self._set_by_path(config, path, env_value)
         
         return config
+    
+    def _set_by_path(self, cfg: Dict[str, Any], path: list, raw_value: str) -> None:
+        """
+        按路径设置配置值（只在完整路径存在时才覆盖）
+        
+        Args:
+            cfg: 配置字典
+            path: 配置路径（列表形式）
+            raw_value: 原始字符串值
+        """
+        node = cfg
+        # 遍历到倒数第二层
+        for key in path[:-1]:
+            if isinstance(node, dict) and key in node:
+                node = node[key]
+            else:
+                # 路径不存在，跳过（避免创建新键）
+                return
+        
+        # 设置叶子节点
+        leaf = path[-1]
+        if isinstance(node, dict) and leaf in node:
+            converted_value = self._convert_type(raw_value, node[leaf])
+            node[leaf] = converted_value
+            logger.debug(f"Environment override: {'.'.join(path)} = {converted_value}")
+        # else: 叶子键不存在，跳过
     
     def _convert_type(self, value: str, reference: Any) -> Any:
         """
@@ -218,19 +256,46 @@ class ConfigLoader:
         """
         解析配置中的相对路径为绝对路径
         
+        递归扫描所有包含路径的配置项（以 *_dir, *_path, *_file 结尾的键）
+        
         Args:
             config: 配置字典
         
         Returns:
             路径解析后的配置字典
         """
+        def resolve_recursive(obj: Any, parent_key: str = '') -> Any:
+            """递归解析路径"""
+            if isinstance(obj, dict):
+                for key, value in obj.items():
+                    # 检查是否是路径相关的键
+                    if isinstance(value, str) and (
+                        key.endswith('_dir') or 
+                        key.endswith('_path') or 
+                        key.endswith('_file') or
+                        key in ('database', 'filename')  # 特殊情况
+                    ):
+                        path_obj = Path(value)
+                        if not path_obj.is_absolute():
+                            obj[key] = str((self.project_root / value).resolve())
+                    elif isinstance(value, (dict, list)):
+                        obj[key] = resolve_recursive(value, key)
+            elif isinstance(obj, list):
+                return [resolve_recursive(item, parent_key) for item in obj]
+            return obj
+        
+        # 优先处理 paths 配置节（保持向后兼容）
         if 'paths' in config:
             for key, path in config['paths'].items():
                 if isinstance(path, str):
                     path_obj = Path(path)
                     if not path_obj.is_absolute():
-                        # 相对路径转换为相对于项目根目录的绝对路径
                         config['paths'][key] = str((self.project_root / path).resolve())
+        
+        # 递归处理其他配置节中的路径
+        for section_key in config:
+            if section_key != 'paths':  # 已经处理过了
+                config[section_key] = resolve_recursive(config[section_key], section_key)
         
         return config
     
@@ -355,15 +420,21 @@ if __name__ == "__main__":
     try:
         config = load_config()
         print("✅ Configuration loaded successfully!")
-        print(f"\n📋 System: {config['system']['name']} v{config['system']['version']}")
-        print(f"🌍 Environment: {config['system']['environment']}")
-        print(f"📁 Data directory: {config['paths']['data_dir']}")
-        print(f"🔧 Queue size: {config['performance']['queue']['max_size']}")
-        print(f"📊 Log level: {config['logging']['level']}")
+        print(f"\n📋 System: {config['system'].get('name', 'Unknown')} v{config['system'].get('version', 'n/a')}")
+        print(f"🌍 Environment: {config['system'].get('environment', 'unknown')}")
+        print(f"📁 Data directory: {config.get('paths', {}).get('data_dir', 'N/A')}")
+        print(f"🔧 Queue size: {config.get('performance', {}).get('queue', {}).get('max_size', 'N/A')}")
+        print(f"📊 Log level: {config.get('logging', {}).get('level', 'N/A')}")
         
         # 测试get方法
         queue_size = get_config('performance.queue.max_size')
         print(f"\n✅ get_config test: queue_size = {queue_size}")
+        
+        # 测试环境变量覆盖（如果有设置）
+        if os.getenv('V13__PERFORMANCE__QUEUE__MAX_SIZE') or os.getenv('PERFORMANCE_QUEUE_MAX_SIZE'):
+            print(f"\n🔧 Environment variable override detected:")
+            print(f"   V13__PERFORMANCE__QUEUE__MAX_SIZE = {os.getenv('V13__PERFORMANCE__QUEUE__MAX_SIZE')}")
+            print(f"   PERFORMANCE_QUEUE_MAX_SIZE = {os.getenv('PERFORMANCE_QUEUE_MAX_SIZE')}")
         
     except Exception as e:
         print(f"❌ Error loading configuration: {e}")

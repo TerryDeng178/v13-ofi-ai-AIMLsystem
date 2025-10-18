@@ -113,22 +113,71 @@ python examples/run_realtime_cvd.py --symbol ETHUSDT --duration 2400
 
 ### 格式
 
+**推荐格式（新）**: 使用双下划线 `__` 分隔层级
+
+```bash
+V13__section__subsection__key=value
 ```
+
+**兼容格式（旧）**: 使用单下划线（前两段作为层级，其余合并为叶子键）
+
+```bash
 SECTION_SUBSECTION_KEY=value
 ```
 
 ### 示例
 
+**推荐用法（新格式）**:
+
 ```bash
 # 覆盖队列大小
-export PERFORMANCE_QUEUE_MAX_SIZE=100000
+export V13__performance__queue__max_size=100000
 
 # 覆盖日志级别
+export V13__logging__level=DEBUG
+
+# 覆盖日志文件大小（叶子键可含下划线）
+export V13__logging__file__max_size_mb=200
+
+# 覆盖组件开关
+export V13__components__cvd__enabled=true
+
+# 覆盖特性开关
+export V13__features__verbose_logging=true
+```
+
+**兼容用法（旧格式）**:
+
+```bash
+# 覆盖队列大小（兼容）
+export PERFORMANCE_QUEUE_MAX_SIZE=100000
+
+# 覆盖日志级别（兼容）
 export LOGGING_LEVEL=DEBUG
 
 # 覆盖系统环境
 export ENV=production
 ```
+
+### 规则说明
+
+1. **双下划线格式**（推荐）:
+   - 使用 `__` 分隔配置层级
+   - 支持任意深度的配置路径
+   - 叶子键可以包含下划线（如 `max_size_mb`）
+   - 可选前缀：`V13__`、`CFG__`、`CONFIG__` 等
+   - 示例：`V13__performance__queue__max_size=100000`
+
+2. **单下划线格式**（兼容）:
+   - 前两段作为层级（section, subsection）
+   - 其余段自动合并为叶子键（用下划线拼回）
+   - 示例：`PERFORMANCE_QUEUE_MAX_SIZE` → `performance.queue.max_size`
+   - 示例：`LOGGING_FILE_MAX_SIZE_MB` → `logging.file.max_size_mb`
+
+3. **安全机制**:
+   - 仅覆盖已存在的配置项（避免误拼写污染配置）
+   - 根据参考值类型自动转换（int/float/bool/str）
+   - 路径不存在时自动跳过，不会创建新键
 
 ## 📋 配置参数速查
 
