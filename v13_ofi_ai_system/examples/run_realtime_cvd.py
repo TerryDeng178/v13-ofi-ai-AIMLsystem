@@ -307,12 +307,23 @@ async def processor(
     records: List[CVDRecord],
 ):
     # P1.1: 支持环境变量配置CVD计算器
+    # Step 1: 支持稳健尺度地板配置
     cfg = CVDConfig(
         z_mode=os.getenv("CVD_Z_MODE", "level"),
         half_life_trades=int(os.getenv("HALF_LIFE_TRADES", "300")),
         winsor_limit=float(os.getenv("WINSOR_LIMIT", "8.0")),
         freeze_min=int(os.getenv("FREEZE_MIN", "50")),
         stale_threshold_ms=int(os.getenv("STALE_THRESHOLD_MS", "5000")),
+        # Step 1 稳健尺度地板参数
+        scale_mode=os.getenv("SCALE_MODE", "ewma"),
+        ewma_fast_hl=int(os.getenv("EWMA_FAST_HL", "80")),
+        mad_window_trades=int(os.getenv("MAD_WINDOW_TRADES", "300")),
+        mad_scale_factor=float(os.getenv("MAD_SCALE_FACTOR", "1.4826")),
+        # Step 1 微调参数
+        scale_fast_weight=float(os.getenv("SCALE_FAST_WEIGHT", "0.30")),
+        scale_slow_weight=float(os.getenv("SCALE_SLOW_WEIGHT", "0.70")),
+        mad_multiplier=float(os.getenv("MAD_MULTIPLIER", "1.30")),
+        post_stale_freeze=int(os.getenv("POST_STALE_FREEZE", "2")),
     )
     calc = RealCVDCalculator(symbol=symbol, cfg=cfg)
     

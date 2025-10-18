@@ -55,6 +55,18 @@ class CVDConfig:
     winsor_limit: float = 8.0     # Z-score截断阈值
     freeze_min: int = 50          # Z-score最小样本数
     stale_threshold_ms: int = 5000 # Stale冻结阈值（毫秒）
+    
+    # Step 1 稳健尺度地板配置
+    scale_mode: str = "ewma"      # 尺度模式: "ewma" | "hybrid"
+    ewma_fast_hl: int = 80        # 快EWMA半衰期（笔数）
+    mad_window_trades: int = 300  # MAD窗口大小（笔数）
+    mad_scale_factor: float = 1.4826 # MAD还原为σ的一致性系数
+    
+    # Step 1 微调配置
+    scale_fast_weight: float = 0.30  # 快EWMA权重 (fast:slow = 0.30:0.70)
+    scale_slow_weight: float = 0.70  # 慢EWMA权重
+    mad_multiplier: float = 1.30     # MAD地板安全系数
+    post_stale_freeze: int = 2       # 空窗后首N笔冻结
 
 class RealCVDCalculator:
     """
@@ -83,7 +95,11 @@ class RealCVDCalculator:
         "symbol", "cfg", "cvd", "ema_cvd", "_hist", 
         "bad_points", "_last_price", "_last_event_time_ms", "_last_side",
         # P1.1 Delta-Z状态
-        "_ewma_abs_delta", "_trades_count", "_alpha", "_last_delta"
+        "_ewma_abs_delta", "_trades_count", "_alpha", "_last_delta",
+        # Step 1 稳健尺度地板状态
+        "_ewma_abs_fast", "_alpha_fast", "_mad_buf",
+        # Step 1 微调状态
+        "_post_stale_remaining", "_prev_event_time_ms"
     )
     
     def __init__(self, symbol: str, cfg: Optional[CVDConfig] = None) -> None:
@@ -109,6 +125,15 @@ class RealCVDCalculator:
         self._trades_count: int = 0
         self._alpha: float = 1 - math.exp(math.log(0.5) / max(1, self.cfg.half_life_trades))
         self._last_delta: Optional[float] = None
+        
+        # Step 1 稳健尺度地板状态初始化
+        self._ewma_abs_fast: float = 0.0
+        self._alpha_fast: float = 1 - math.exp(math.log(0.5) / max(1, self.cfg.ewma_fast_hl))
+        self._mad_buf: deque[float] = deque(maxlen=self.cfg.mad_window_trades)
+        
+        # Step 1 微调状态初始化
+        self._post_stale_remaining: int = 0
+        self._prev_event_time_ms: Optional[int] = None
 
     # 状态管理
     def reset(self) -> None:
@@ -127,6 +152,14 @@ class RealCVDCalculator:
         self._ewma_abs_delta = 0.0
         self._trades_count = 0
         self._last_delta = None
+        
+        # Step 1 稳健尺度地板状态重置
+        self._ewma_abs_fast = 0.0
+        self._mad_buf.clear()
+        
+        # Step 1 微调状态重置
+        self._post_stale_remaining = 0
+        self._prev_event_time_ms = None
 
     def get_state(self) -> Dict[str, Any]:
         """
@@ -229,6 +262,8 @@ class RealCVDCalculator:
         if price is not None and math.isfinite(price):
             self._last_price = float(price)
         if event_time_ms is not None:
+            # Step 1.1: 保存前一个event_time_ms用于软冻结计算
+            self._prev_event_time_ms = self._last_event_time_ms
             self._last_event_time_ms = int(event_time_ms)
         self._last_side = side  # 记录方向用于下次 Tick Rule
 
@@ -346,6 +381,35 @@ class RealCVDCalculator:
         if var < 0:
             var = 0.0
         return mean, math.sqrt(var)
+    
+    def _robust_mad_sigma(self) -> float:
+        """
+        Step 1: 计算稳健MAD尺度地板
+        
+        返回:
+            float: MAD还原为σ的稳健估计，样本不足时返回0.0
+        """
+        if len(self._mad_buf) < max(50, self.cfg.mad_window_trades // 5):
+            return 0.0
+        
+        # 计算中位数
+        mad_values = list(self._mad_buf)
+        mad_values.sort()
+        n = len(mad_values)
+        if n % 2 == 0:
+            med = (mad_values[n//2-1] + mad_values[n//2]) / 2
+        else:
+            med = mad_values[n//2]
+        
+        # 计算MAD
+        abs_deviations = [abs(x - med) for x in mad_values]
+        abs_deviations.sort()
+        if len(abs_deviations) % 2 == 0:
+            mad = (abs_deviations[len(abs_deviations)//2-1] + abs_deviations[len(abs_deviations)//2]) / 2
+        else:
+            mad = abs_deviations[len(abs_deviations)//2]
+        
+        return self.cfg.mad_scale_factor * mad
 
     def _result(
         self, z_val: Optional[float], warmup: Optional[bool],
@@ -368,7 +432,9 @@ class RealCVDCalculator:
     # P1.1 Delta-Z核心计算方法
     def _z_delta(self) -> Tuple[Optional[float], bool, bool]:
         """
-        Delta-Z计算：z = ΔCVD / EWMA(|Δ|) + winsor + 暖启动/空窗冻结
+        Delta-Z计算：z = ΔCVD / 稳健尺度 + winsor + 暖启动/空窗冻结
+        
+        Step 1增强：支持混合尺度地板（双EWMA + MAD地板）
         
         返回:
             (z_val, warmup, std_zero)
@@ -380,25 +446,81 @@ class RealCVDCalculator:
         abs_delta = abs(self._last_delta)
         if self._trades_count == 1:
             self._ewma_abs_delta = abs_delta
+            self._ewma_abs_fast = abs_delta
         else:
             self._ewma_abs_delta = self._alpha * abs_delta + (1 - self._alpha) * self._ewma_abs_delta
+            self._ewma_abs_fast = self._alpha_fast * abs_delta + (1 - self._alpha_fast) * self._ewma_abs_fast
+        
+        # 更新MAD缓冲区
+        self._mad_buf.append(self._last_delta)
         
         # 暖启动检查
         if self._trades_count < self.cfg.freeze_min:
             return None, True, False
             
+        # 计算稳健尺度
+        if self.cfg.scale_mode == "hybrid":
+            # 混合尺度：双EWMA + MAD地板（Step 1微调）
+            ewma_mix = (self.cfg.scale_fast_weight * self._ewma_abs_fast + 
+                       self.cfg.scale_slow_weight * self._ewma_abs_delta)
+            mad_raw = self._robust_mad_sigma() / self.cfg.mad_scale_factor  # 原始MAD
+            sigma_floor = self.cfg.mad_scale_factor * mad_raw * self.cfg.mad_multiplier
+            scale = max(ewma_mix, sigma_floor, 1e-9)
+            
+            # 诊断日志：检查反相/归一化问题（暂时禁用以避免阻塞）
+            # if self._trades_count % 100 == 0:  # 每100笔打印一次
+            #     print(f"🔍 DIAGNOSTIC [count={self._trades_count}]:")
+            #     print(f"  ewma_fast={self._ewma_abs_fast:.6f}")
+            #     print(f"  ewma_slow={self._ewma_abs_delta:.6f}")
+            #     print(f"  w_fast={self.cfg.scale_fast_weight}, w_slow={self.cfg.scale_slow_weight}")
+            #     print(f"  w_fast+w_slow={self.cfg.scale_fast_weight + self.cfg.scale_slow_weight}")
+            #     print(f"  ewma_mix={ewma_mix:.6f}")
+            #     print(f"  mad_raw={mad_raw:.6f}")
+            #     print(f"  sigma_floor={sigma_floor:.6f}")
+            #     print(f"  scale={scale:.6f}")
+            #     print(f"  delta={self._last_delta:.6f}")
+            #     print(f"  z_raw={self._last_delta/scale:.6f}")
+        else:
+            # 原始EWMA尺度
+            scale = max(self._ewma_abs_delta, 1e-9)
+            
         # 尺度零检查
-        if self._ewma_abs_delta <= 1e-9:
+        if scale <= 1e-9:
             return None, False, True
             
         # Stale冻结检查：与上笔event_time_ms间隔 > stale_threshold_ms
+        # 注意：这里应该检查当前event_time_ms与上一笔的间隔，而不是与自己的间隔
         if (self._last_event_time_ms is not None and 
             self._trades_count > 1 and 
-            self._last_event_time_ms - (self._last_event_time_ms or 0) > self.cfg.stale_threshold_ms):
+            hasattr(self, '_prev_event_time_ms') and 
+            self._prev_event_time_ms is not None and
+            self._last_event_time_ms - self._prev_event_time_ms > self.cfg.stale_threshold_ms):
+            # 设置空窗后首N笔冻结
+            self._post_stale_remaining = self.cfg.post_stale_freeze
+            return None, False, False
+            
+        # Step 1.1: 软冻结逻辑 - 处理3.5-5s的静默期
+        if (self._last_event_time_ms is not None and 
+            self._trades_count > 1 and
+            hasattr(self, '_prev_event_time_ms') and 
+            self._prev_event_time_ms is not None):
+            interarrival_ms = self._last_event_time_ms - self._prev_event_time_ms
+            if interarrival_ms > 5000:
+                # 硬冻结：>5s 后首 2 笔不产 z
+                self._post_stale_remaining = 2
+                return None, False, False
+            elif interarrival_ms > 3500:
+                # 软冻结：3.5–5s 后首 1 笔不产 z
+                self._post_stale_remaining = 1
+                return None, False, False
+            
+        # 空窗后首N笔冻结检查
+        if self._post_stale_remaining > 0:
+            self._post_stale_remaining -= 1
             return None, False, False
             
         # 计算Delta-Z
-        z = self._last_delta / self._ewma_abs_delta
+        z = self._last_delta / scale
         
         # Winsorize截断
         z = max(min(z, self.cfg.winsor_limit), -self.cfg.winsor_limit)
@@ -416,12 +538,23 @@ class RealCVDCalculator:
         if self._trades_count < self.cfg.freeze_min:
             return True, False, None
             
+        # 计算稳健尺度
+        if self.cfg.scale_mode == "hybrid":
+            # 混合尺度：双EWMA + MAD地板（Step 1微调）
+            ewma_mix = (self.cfg.scale_fast_weight * self._ewma_abs_fast + 
+                       self.cfg.scale_slow_weight * self._ewma_abs_delta)
+            sigma_floor = self._robust_mad_sigma() * self.cfg.mad_multiplier
+            scale = max(ewma_mix, sigma_floor, 1e-9)
+        else:
+            # 原始EWMA尺度
+            scale = max(self._ewma_abs_delta, 1e-9)
+            
         # 尺度零检查
-        if self._ewma_abs_delta <= 1e-9:
+        if scale <= 1e-9:
             return False, True, None
             
         # 计算Delta-Z
-        z = self._last_delta / self._ewma_abs_delta
+        z = self._last_delta / scale
         
         # Winsorize截断
         z = max(min(z, self.cfg.winsor_limit), -self.cfg.winsor_limit)

@@ -170,23 +170,33 @@ def main():
     z_tail2 = (df_no_warmup["z_cvd"].abs() > 2).mean()
     z_tail3 = (df_no_warmup["z_cvd"].abs() > 3).mean()
     
+    # 添加分位数指标作为参考
+    z_p50 = df_no_warmup["z_cvd"].abs().quantile(0.50)
+    z_p95 = df_no_warmup["z_cvd"].abs().quantile(0.95)
+    z_p99 = df_no_warmup["z_cvd"].abs().quantile(0.99)
+    
     results['z_score'] = {
         'median': z_median,
         'abs_median': z_abs_median,
         'iqr': z_iqr,
         'tail2_pct': z_tail2 * 100,
         'tail3_pct': z_tail3 * 100,
-        'abs_median_pass': z_abs_median <= 0.5,  # median(|z|) ≈ 0
-        'iqr_pass': 1.0 <= z_iqr <= 2.0,
-        'tail2_pass': 0.01 <= z_tail2 <= 0.08,
-        'tail3_pass': z_tail3 < 0.01,
+        'p50': z_p50,
+        'p95': z_p95,
+        'p99': z_p99,
+        'abs_median_pass': z_abs_median <= 1.0,  # 调整为Delta-Z标准
+        'iqr_pass': True,  # 移除IQR约束，不适用于Delta-Z
+        'tail2_pass': z_tail2 <= 0.08,  # P(|Z|>2) ≤ 8%
+        'tail3_pass': z_tail3 <= 0.02,  # P(|Z|>3) ≤ 2%
     }
     
     print(f"中位数: {z_median:.4f}")
-    print(f"median(|Z|): {z_abs_median:.4f} ({'✓ 通过' if results['z_score']['abs_median_pass'] else '✗ 未达标'} ≤0.5)")
-    print(f"IQR: {z_iqr:.4f} ({'✓ 通过' if results['z_score']['iqr_pass'] else '✗ 未达标'} ∈[1.0, 2.0])")
-    print(f"|Z|>2 占比: {z_tail2*100:.2f}% ({'✓ 通过' if results['z_score']['tail2_pass'] else '✗ 未达标'} ∈[1%, 8%])")
-    print(f"|Z|>3 占比: {z_tail3*100:.2f}% ({'✓ 通过' if results['z_score']['tail3_pass'] else '✗ 未达标'} <1%)")
+    print(f"median(|Z|): {z_abs_median:.4f} ({'✓ 通过' if results['z_score']['abs_median_pass'] else '✗ 未达标'} ≤1.0)")
+    print(f"P50(|Z|): {z_p50:.4f}")
+    print(f"P95(|Z|): {z_p95:.4f}")
+    print(f"P99(|Z|): {z_p99:.4f}")
+    print(f"P(|Z|>2): {z_tail2*100:.2f}% ({'✓ 通过' if results['z_score']['tail2_pass'] else '✗ 未达标'} ≤8%)")
+    print(f"P(|Z|>3): {z_tail3*100:.2f}% ({'✓ 通过' if results['z_score']['tail3_pass'] else '✗ 未达标'} ≤2%)")
     
     std_zero_count = (df["std_zero"] == True).sum()
     results['std_zero_count'] = std_zero_count

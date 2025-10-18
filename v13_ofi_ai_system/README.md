@@ -109,6 +109,27 @@ python src/real_ofi_calculator.py
 - [V13开发指导](docs/V13_DEVELOPMENT_GUIDE.md) - 完整的开发路线图
 - [V12经验总结](../🌟V12_TECHNICAL_FRAMEWORK_DEVELOPMENT_PLAN.md) - V12项目的经验教训
 
+## 🎯 Quality Gates (质量门控)
+
+### 生产环境质量标准
+
+**硬线指标 (必须达标)**:
+- ✅ **P(|Z|>2) ≤ 8%** - Z-score尾部控制
+- ✅ **median(|Z|) ≤ 1.0** - Z-score中位数控制
+- ✅ **数据完整性 = 100%** - 解析错误=0，队列丢弃率=0%
+- ✅ **数据一致性 = 100%** - 逐笔守恒错误=0
+- ✅ **ID健康 = 100%** - 重复ID=0，倒序ID=0
+
+**优化指标 (持续改进)**:
+- 🎯 **P(|Z|>3) ≤ 2%** - 当前4.65%，目标≤2%
+- 🎯 **P95(|Z|) ≤ 3.0** - 当前2.71，持续优化
+- 🎯 **延迟优化** - 分析模式≤5s，实时模式≤1s
+
+### 配置档位
+
+- **分析模式**: `config/profiles/analysis.env` (WATERMARK_MS=2000)
+- **实时模式**: `config/profiles/realtime.env` (WATERMARK_MS=500)
+
 ## ⚠️ 重要原则
 
 **绝对禁止**:
