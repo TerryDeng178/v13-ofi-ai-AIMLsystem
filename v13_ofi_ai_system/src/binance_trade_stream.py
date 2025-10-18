@@ -10,6 +10,7 @@ binance_trade_stream.py - Minimal runnable Binance @aggTrade stream + CVD integr
 from __future__ import annotations
 
 import asyncio
+import heapq
 import json
 import logging
 import os
@@ -17,7 +18,7 @@ import signal
 import sys
 import time
 from dataclasses import dataclass
-from typing import Optional, Tuple, Any, Dict
+from typing import Optional, Tuple, Any, Dict, List
 
 # ---- optional import path helper (project-style) ----
 def _ensure_project_path():
@@ -95,14 +96,36 @@ class PerfStats:
 # ---- monitoring metrics ----
 @dataclass
 class MonitoringMetrics:
-    """全局监控指标"""
+    """全局监控指标 - P0-B增强版"""
     reconnect_count: int = 0
     queue_dropped: int = 0
     total_messages: int = 0
     parse_errors: int = 0
+    # P0-B新增监控指标
+    agg_dup_count: int = 0        # aggTradeId重复次数（a==last_a）
+    agg_backward_count: int = 0  # aggTradeId倒序次数（a<last_a）
+    late_event_dropped: int = 0   # 水位线后到达被丢弃的迟到事件
+    buffer_size_samples: List[int] = None  # 缓冲队列大小采样
+    
+    def __post_init__(self):
+        if self.buffer_size_samples is None:
+            self.buffer_size_samples = []
     
     def queue_dropped_rate(self) -> float:
         return (self.queue_dropped / self.total_messages) if self.total_messages > 0 else 0.0
+    
+    def agg_dup_rate(self) -> float:
+        return (self.agg_dup_count / self.total_messages) if self.total_messages > 0 else 0.0
+    
+    def buffer_size_p95(self) -> float:
+        if not self.buffer_size_samples:
+            return 0.0
+        sorted_samples = sorted(self.buffer_size_samples)
+        idx = int(len(sorted_samples) * 0.95)
+        return float(sorted_samples[min(idx, len(sorted_samples) - 1)])
+    
+    def buffer_size_max(self) -> int:
+        return max(self.buffer_size_samples) if self.buffer_size_samples else 0
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -111,7 +134,108 @@ class MonitoringMetrics:
             "total_messages": self.total_messages,
             "parse_errors": self.parse_errors,
             "queue_dropped_rate": self.queue_dropped_rate(),
+            "agg_dup_count": self.agg_dup_count,
+            "agg_dup_rate": self.agg_dup_rate(),
+            "agg_backward_count": self.agg_backward_count,
+            "late_event_dropped": self.late_event_dropped,
+            "buffer_size_p95": self.buffer_size_p95(),
+            "buffer_size_max": self.buffer_size_max(),
         }
+
+# ---- P0-B: 2s水位线重排器 ----
+class WatermarkBuffer:
+    """
+    2s水位线重排缓冲：按 (event_time_ms, agg_trade_id) 排序输出
+    - 检测倒序ID并resync
+    - 统计buffer大小（p95/max）
+    - 记录late_write（水位线外写入）
+    """
+    def __init__(self, watermark_ms: int = 2000):
+        self.watermark_ms = watermark_ms
+        self.last_a = -1  # 上次输出的aggTradeId
+        self.heap: List[Tuple[int, int, Any]] = []  # (event_time_ms, agg_trade_id, parsed_data)
+        self.late_writes = 0
+    
+    def feed(self, event_ms: int, agg_trade_id: int, parsed_data: Tuple, metrics: MonitoringMetrics) -> List[Tuple]:
+        """
+        输入一条消息，返回可以输出的消息列表（已排序）
+        parsed_data = (price, qty, is_buy, event_time_ms, agg_trade_id)
+        """
+        # 预警：检测倒序/重复ID（仅记录，不阻断）
+        if agg_trade_id < self.last_a:
+            log.warning(
+                "[WATERMARK] Backward agg_trade_id detected: %d < last=%d",
+                agg_trade_id, self.last_a
+            )
+        elif agg_trade_id == self.last_a:
+            log.warning(
+                "[WATERMARK] Duplicate agg_trade_id detected: %d == last=%d",
+                agg_trade_id, self.last_a
+            )
+        
+        # 加入堆
+        heapq.heappush(self.heap, (event_ms, agg_trade_id, parsed_data))
+        
+        # 采样缓冲大小
+        if len(self.heap) > 0 and len(metrics.buffer_size_samples) < 100000:  # 限制采样数量
+            metrics.buffer_size_samples.append(len(self.heap))
+        
+        # 水位线逻辑：输出所有 event_time_ms <= (now - watermark_ms) 的消息
+        now_ms = int(time.time() * 1000)
+        threshold_ms = now_ms - self.watermark_ms
+        
+        output = []
+        while self.heap and self.heap[0][0] <= threshold_ms:
+            event_ms_out, agg_id_out, data_out = heapq.heappop(self.heap)
+            
+            # 去重/去倒序：丢弃 agg_id <= last_a 的事件
+            if agg_id_out <= self.last_a:
+                if agg_id_out == self.last_a:
+                    metrics.agg_dup_count += 1
+                    log.warning(
+                        "[WATERMARK] Dropped duplicate: agg_id=%d (dup_count=%d)",
+                        agg_id_out, metrics.agg_dup_count
+                    )
+                else:
+                    metrics.agg_backward_count += 1
+                    log.warning(
+                        "[WATERMARK] Dropped backward: agg_id=%d < last_a=%d (backward_count=%d)",
+                        agg_id_out, self.last_a, metrics.agg_backward_count
+                    )
+                metrics.late_event_dropped += 1
+                continue  # ✅ 不输出、不更新 last_a
+            
+            self.last_a = agg_id_out
+            output.append(data_out)
+        
+        return output
+    
+    def flush_all(self, metrics: MonitoringMetrics) -> List[Tuple]:
+        """强制输出所有剩余消息（程序退出时），同样应用去重逻辑"""
+        output = []
+        while self.heap:
+            event_ms_out, agg_id_out, data_out = heapq.heappop(self.heap)
+            
+            # flush阶段同样去重/去倒序
+            if agg_id_out <= self.last_a:
+                if agg_id_out == self.last_a:
+                    metrics.agg_dup_count += 1
+                    log.warning(
+                        "[FLUSH] Dropped duplicate: agg_id=%d (dup_count=%d)",
+                        agg_id_out, metrics.agg_dup_count
+                    )
+                else:
+                    metrics.agg_backward_count += 1
+                    log.warning(
+                        "[FLUSH] Dropped backward: agg_id=%d < last_a=%d (backward_count=%d)",
+                        agg_id_out, self.last_a, metrics.agg_backward_count
+                    )
+                metrics.late_event_dropped += 1
+                continue  # ✅ 不输出、不更新 last_a
+            
+            self.last_a = agg_id_out
+            output.append(data_out)
+        return output
 
 # ---- parsing ----
 def parse_aggtrade_message(text: str) -> Optional[Tuple[float, float, bool, Optional[int], Optional[int]]]:
@@ -182,6 +306,11 @@ async def processor(symbol: str, queue: asyncio.Queue, stop_evt: asyncio.Event, 
     cfg = CVDConfig()
     calc = RealCVDCalculator(symbol=symbol, cfg=cfg)
 
+    # P0-B: 初始化水位线缓冲
+    watermark_ms = int(os.getenv("WATERMARK_MS", "2000"))
+    watermark = WatermarkBuffer(watermark_ms=watermark_ms)
+    log.info("[P0-B] Watermark buffer initialized: watermark_ms=%d", watermark_ms)
+
     perf = PerfStats()
     print_every = int(os.getenv("PRINT_EVERY", "100"))  # 每100条打印一次
     processed = 0
@@ -207,26 +336,42 @@ async def processor(symbol: str, queue: asyncio.Queue, stop_evt: asyncio.Event, 
             continue
 
         price, qty, is_buy, event_ms, agg_trade_id = parsed
-        ret = calc.update_with_trade(price=price, qty=qty, is_buy=is_buy, event_time_ms=event_ms)
-        processed += 1
-        dt = time.time() - t0
-        perf.feed(dt)
         
-        # 计算延迟（从交易所事件时间到现在）
-        latency_ms = (time.time() * 1000 - event_ms) if event_ms else 0.0
+        # P0-B: 送入水位线重排，返回排序后可输出的消息
+        ready_list = watermark.feed(event_ms, agg_trade_id, parsed, metrics)
+        
+        # 处理所有ready的消息
+        for ready_parsed in ready_list:
+            price_r, qty_r, is_buy_r, event_ms_r, agg_trade_id_r = ready_parsed
+            ret = calc.update_with_trade(price=price_r, qty=qty_r, is_buy=is_buy_r, event_time_ms=event_ms_r)
+            processed += 1
+            dt = time.time() - t0
+            perf.feed(dt)
+            
+            # 计算延迟（从交易所事件时间到现在）
+            latency_ms = (time.time() * 1000 - event_ms_r) if event_ms_r else 0.0
 
-        if processed % print_every == 0 or processed <= 5:
-            log.info(
-                "CVD %s | cvd=%.6f z=%s ema=%.6f | warmup=%s std_zero=%s bad=%d | latency=%.1fms",
-                symbol,
-                ret["cvd"],
-                "None" if ret["z_cvd"] is None else f"{ret['z_cvd']:.3f}",
-                ret["ema_cvd"] if ret["ema_cvd"] is not None else float('nan'),
-                ret["meta"]["warmup"],
-                ret["meta"]["std_zero"],
-                ret["meta"]["bad_points"],
-                latency_ms,
-            )
+            if processed % print_every == 0 or processed <= 5:
+                log.info(
+                    "CVD %s | cvd=%.6f z=%s ema=%.6f | warmup=%s std_zero=%s bad=%d | latency=%.1fms",
+                    symbol,
+                    ret["cvd"],
+                    "None" if ret["z_cvd"] is None else f"{ret['z_cvd']:.3f}",
+                    ret["ema_cvd"] if ret["ema_cvd"] is not None else float('nan'),
+                    ret["meta"]["warmup"],
+                    ret["meta"]["std_zero"],
+                    ret["meta"]["bad_points"],
+                    latency_ms,
+                )
+    
+    # P0-B: 程序退出时，flush所有剩余消息（应用去重逻辑）
+    log.info("[P0-B] Flushing watermark buffer: %d messages remaining", len(watermark.heap))
+    remaining = watermark.flush_all(metrics)
+    for ready_parsed in remaining:
+        price_r, qty_r, is_buy_r, event_ms_r, agg_trade_id_r = ready_parsed
+        ret = calc.update_with_trade(price=price_r, qty=qty_r, is_buy=is_buy_r, event_time_ms=event_ms_r)
+        processed += 1
+    log.info("[P0-B] Flushed %d messages, total processed=%d", len(remaining), processed)
 
 # ---- main ----
 async def main(symbol: Optional[str] = None, url: Optional[str] = None):

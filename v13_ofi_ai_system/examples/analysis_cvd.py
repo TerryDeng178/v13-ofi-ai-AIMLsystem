@@ -203,15 +203,24 @@ def main():
         results['warmup_pass'],
     ])
     
-    # 5. 一致性验证（增量守恒，抽样1%）
+    # 5. 一致性验证（增量守恒，P0-B：全量检查≤10k笔）
     print("\n" + "="*60)
     print("5. 一致性验证（增量守恒检查）")
     print("="*60)
     
-    sample_size = max(int(len(df) * 0.01), 100)
-    # 注意：抽样后需要按排序顺序（已排序的df按index抽样）
-    sample_indices = np.sort(np.random.choice(len(df), size=min(sample_size, len(df)), replace=False))
-    df_sample = df.iloc[sample_indices].copy()
+    # P0-B修改：≤10k笔全量检查，>10k才抽样（固定最小样本1k）
+    CHECK_THRESHOLD = 10000
+    MIN_SAMPLE_SIZE = 1000  # 最小样本数，提升稳健性
+    if len(df) <= CHECK_THRESHOLD:
+        # 全量检查
+        df_sample = df.copy()
+        print(f"✓ 数据量 {len(df)} ≤ {CHECK_THRESHOLD}，使用全量检查")
+    else:
+        # 抽样1%，但至少1k笔
+        sample_size = max(int(len(df) * 0.01), MIN_SAMPLE_SIZE)
+        sample_indices = np.sort(np.random.choice(len(df), size=min(sample_size, len(df)), replace=False))
+        df_sample = df.iloc[sample_indices].copy()
+        print(f"⚠️ 数据量 {len(df)} > {CHECK_THRESHOLD}，使用抽样检查（{len(df_sample)}笔，最小{MIN_SAMPLE_SIZE}笔）")
     
     # 改进的CVD连续性检查（P0-A）
     # 逐笔守恒：cvd_t == cvd_{t-1} + Δcvd_t，其中 Δcvd_t = (+qty if is_buy else -qty)
@@ -532,9 +541,12 @@ def main():
         f.write(f"- [{'x' if results['z_score']['tail3_pass'] else ' '}] P(|Z|>3): {z_tail3*100:.2f}% (<1%)\n")
         f.write(f"- [{'x' if results['std_zero_pass'] else ' '}] std_zero: {std_zero_count} (==0)\n\n")
         
-        f.write("### 5. 一致性验证（抽样1%）\n")
+        # P0-B：根据实际检查类型调整报告说明
+        check_method = "全量" if len(df) <= 10000 else "抽样1%"
+        f.write(f"### 5. 一致性验证（{check_method}检查）\n")
         f.write(f"- [{'x' if results['cvd_continuity']['pass'] else ' '}] 逐笔守恒: {results['cvd_continuity']['continuity_mismatches']} 错误 (容差≤1e-9)\n")
-        f.write(f"- [{'x' if results['cvd_continuity']['conservation_error'] < 1e-6 else ' '}] 首尾守恒误差: {results['cvd_continuity']['conservation_error']:.2e} (≤1e-6)\n\n")
+        f.write(f"- [{'x' if results['cvd_continuity']['conservation_error'] < 1e-6 else ' '}] 首尾守恒误差: {results['cvd_continuity']['conservation_error']:.2e} (≤1e-6)\n")
+        f.write(f"- 检查样本: {results['cvd_continuity']['sample_size']} 笔 ({check_method})\n\n")
         
         f.write("### 6. 稳定性\n")
         f.write(f"- [{'x' if results.get('reconnect_pass', True) else ' '}] 重连频率: {results.get('reconnect_rate_per_hour', 0):.2f}次/小时 (≤3/小时)\n\n")
