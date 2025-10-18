@@ -34,14 +34,19 @@ def main():
             sys.exit(1)
         print(f"找到 {len(parquet_files)} 个 parquet 文件")
         
-        # 多文件合并时添加run_id
-        dfs = []
-        for f in parquet_files:
-            df_temp = pd.read_parquet(f)
-            df_temp['run_id'] = f.stem
-            dfs.append(df_temp)
-        df = pd.concat(dfs, ignore_index=True)
-        print(f"✓ 已添加run_id列，便于分运行统计")
+        # 默认分析最新文件，避免误报重复ID
+        if len(parquet_files) == 1:
+            latest_file = parquet_files[0]
+        else:
+            # 按修改时间排序，选择最新的文件
+            parquet_files.sort(key=lambda x: x.stat().st_mtime, reverse=True)
+            latest_file = parquet_files[0]
+            print(f"🎯 默认分析最新文件: {latest_file.name}")
+            print(f"💡 提示: 如需合并分析，请使用 --merge-files 参数")
+        
+        df = pd.read_parquet(latest_file)
+        df['run_id'] = latest_file.stem
+        print(f"✓ 已加载 {len(df)} 条记录")
     else:
         df = pd.read_parquet(data_path)
         df['run_id'] = data_path.stem
