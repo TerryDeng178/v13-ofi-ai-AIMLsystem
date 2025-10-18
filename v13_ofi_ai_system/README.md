@@ -106,6 +106,13 @@ python src/real_ofi_calculator.py
 
 ## 📚 参考文档
 
+### 核心系统文档
+- [CVD系统详细文档](docs/CVD_SYSTEM_README.md) - 完整的CVD系统使用指南
+- [CVD快速参考](docs/CVD_QUICK_REFERENCE.md) - 5分钟快速开始指南
+- [监控仪表盘配置](docs/monitoring/dashboard_config.md) - 生产环境监控设置
+- [P1.2优化计划](docs/roadmap/P1.2_optimization_plan.md) - 后续优化路线图
+
+### 开发文档
 - [V13开发指导](docs/V13_DEVELOPMENT_GUIDE.md) - 完整的开发路线图
 - [V12经验总结](../🌟V12_TECHNICAL_FRAMEWORK_DEVELOPMENT_PLAN.md) - V12项目的经验教训
 

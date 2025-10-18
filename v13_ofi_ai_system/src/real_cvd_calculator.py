@@ -134,6 +134,24 @@ class RealCVDCalculator:
         # Step 1 微调状态初始化
         self._post_stale_remaining: int = 0
         self._prev_event_time_ms: Optional[int] = None
+        
+        # 配置验证和诊断日志
+        self._print_effective_config()
+
+    def _print_effective_config(self) -> None:
+        """打印有效配置，用于验证Step 1.6是否正确加载"""
+        print(f"[CVD] Effective config for {self.symbol}:")
+        print(f"  Z_MODE={self.cfg.z_mode}")  # 防止误配置
+        print(f"  HALF_LIFE_TRADES={self.cfg.half_life_trades}")
+        print(f"  WINSOR_LIMIT={self.cfg.winsor_limit}")
+        print(f"  STALE_THRESHOLD_MS={self.cfg.stale_threshold_ms}")
+        print(f"  FREEZE_MIN={self.cfg.freeze_min}")
+        print(f"  SCALE_MODE={self.cfg.scale_mode}")
+        print(f"  EWMA_FAST_HL={self.cfg.ewma_fast_hl}")
+        print(f"  SCALE_FAST_WEIGHT={self.cfg.scale_fast_weight} (slow={self.cfg.scale_slow_weight})")
+        print(f"  MAD_WINDOW_TRADES={self.cfg.mad_window_trades}")
+        print(f"  MAD_SCALE_FACTOR={self.cfg.mad_scale_factor}")
+        print(f"  MAD_MULTIPLIER={self.cfg.mad_multiplier}")
 
     # 状态管理
     def reset(self) -> None:
@@ -461,25 +479,34 @@ class RealCVDCalculator:
         # 计算稳健尺度
         if self.cfg.scale_mode == "hybrid":
             # 混合尺度：双EWMA + MAD地板（Step 1微调）
-            ewma_mix = (self.cfg.scale_fast_weight * self._ewma_abs_fast + 
-                       self.cfg.scale_slow_weight * self._ewma_abs_delta)
+            # 权重归一化：防止配置错误
+            w_fast = max(0.0, min(1.0, self.cfg.scale_fast_weight))
+            w_slow = max(0.0, min(1.0, self.cfg.scale_slow_weight))
+            w_sum = w_fast + w_slow
+            if w_sum <= 1e-9:
+                w_fast, w_slow = 0.5, 0.5
+            else:
+                w_fast, w_slow = w_fast / w_sum, w_slow / w_sum
+            
+            ewma_mix = (w_fast * self._ewma_abs_fast + 
+                       w_slow * self._ewma_abs_delta)
             mad_raw = self._robust_mad_sigma() / self.cfg.mad_scale_factor  # 原始MAD
             sigma_floor = self.cfg.mad_scale_factor * mad_raw * self.cfg.mad_multiplier
             scale = max(ewma_mix, sigma_floor, 1e-9)
             
-            # 诊断日志：检查反相/归一化问题（暂时禁用以避免阻塞）
-            # if self._trades_count % 100 == 0:  # 每100笔打印一次
-            #     print(f"🔍 DIAGNOSTIC [count={self._trades_count}]:")
-            #     print(f"  ewma_fast={self._ewma_abs_fast:.6f}")
-            #     print(f"  ewma_slow={self._ewma_abs_delta:.6f}")
-            #     print(f"  w_fast={self.cfg.scale_fast_weight}, w_slow={self.cfg.scale_slow_weight}")
-            #     print(f"  w_fast+w_slow={self.cfg.scale_fast_weight + self.cfg.scale_slow_weight}")
-            #     print(f"  ewma_mix={ewma_mix:.6f}")
-            #     print(f"  mad_raw={mad_raw:.6f}")
-            #     print(f"  sigma_floor={sigma_floor:.6f}")
-            #     print(f"  scale={scale:.6f}")
-            #     print(f"  delta={self._last_delta:.6f}")
-            #     print(f"  z_raw={self._last_delta/scale:.6f}")
+            # 诊断日志：检查反相/归一化问题（每300笔记录一次，避免阻塞）
+            if self._trades_count % 1000 == 0:  # 每1000笔打印一次
+                print(f"🔍 DIAGNOSTIC [count={self._trades_count}]:")
+                print(f"  ewma_fast={self._ewma_abs_fast:.6f}")
+                print(f"  ewma_slow={self._ewma_abs_delta:.6f}")
+                print(f"  w_fast={self.cfg.scale_fast_weight}, w_slow={self.cfg.scale_slow_weight}")
+                print(f"  w_fast+w_slow={self.cfg.scale_fast_weight + self.cfg.scale_slow_weight}")
+                print(f"  ewma_mix={ewma_mix:.6f}")
+                print(f"  mad_raw={mad_raw:.6f}")
+                print(f"  sigma_floor={sigma_floor:.6f}")
+                print(f"  scale={scale:.6f}")
+                print(f"  delta={self._last_delta:.6f}")
+                print(f"  z_raw={self._last_delta/scale:.6f}")
         else:
             # 原始EWMA尺度
             scale = max(self._ewma_abs_delta, 1e-9)
@@ -499,18 +526,18 @@ class RealCVDCalculator:
             self._post_stale_remaining = self.cfg.post_stale_freeze
             return None, False, False
             
-        # Step 1.1: 软冻结逻辑 - 处理3.5-5s的静默期
+        # Step 1.1: 事件时间(E)分段冻结 - 基于重排后的事件时间E的相邻间隔
         if (self._last_event_time_ms is not None and 
             self._trades_count > 1 and
             hasattr(self, '_prev_event_time_ms') and 
             self._prev_event_time_ms is not None):
             interarrival_ms = self._last_event_time_ms - self._prev_event_time_ms
             if interarrival_ms > 5000:
-                # 硬冻结：>5s 后首 2 笔不产 z
+                # 硬冻结：E间隔 > 5s → 首 2 笔 z=None
                 self._post_stale_remaining = 2
                 return None, False, False
-            elif interarrival_ms > 3500:
-                # 软冻结：3.5–5s 后首 1 笔不产 z
+            elif interarrival_ms > 4000:
+                # 软冻结：4.0s < E间隔 ≤ 5.0s → 首 1 笔 z=None
                 self._post_stale_remaining = 1
                 return None, False, False
             
@@ -541,8 +568,17 @@ class RealCVDCalculator:
         # 计算稳健尺度
         if self.cfg.scale_mode == "hybrid":
             # 混合尺度：双EWMA + MAD地板（Step 1微调）
-            ewma_mix = (self.cfg.scale_fast_weight * self._ewma_abs_fast + 
-                       self.cfg.scale_slow_weight * self._ewma_abs_delta)
+            # 权重归一化：防止配置错误
+            w_fast = max(0.0, min(1.0, self.cfg.scale_fast_weight))
+            w_slow = max(0.0, min(1.0, self.cfg.scale_slow_weight))
+            w_sum = w_fast + w_slow
+            if w_sum <= 1e-9:
+                w_fast, w_slow = 0.5, 0.5
+            else:
+                w_fast, w_slow = w_fast / w_sum, w_slow / w_sum
+            
+            ewma_mix = (w_fast * self._ewma_abs_fast + 
+                       w_slow * self._ewma_abs_delta)
             sigma_floor = self._robust_mad_sigma() * self.cfg.mad_multiplier
             scale = max(ewma_mix, sigma_floor, 1e-9)
         else:

@@ -98,13 +98,14 @@ class CVDRecord:
 class MonitoringMetrics:
     """监控指标 - P0-B增强版"""
     reconnect_count: int = 0
-    queue_dropped: int = 0
+    # 指标口径分离：区分通道层面丢弃 vs 水位线迟到丢弃
+    queue_dropped: int = 0        # 通道层面丢弃（队列满时丢弃）
+    late_event_dropped: int = 0   # 水位线后迟到被丢弃的事件
     total_messages: int = 0
     parse_errors: int = 0
     # P0-B新增监控指标
     agg_dup_count: int = 0        # aggTradeId重复次数（a==last_a）
     agg_backward_count: int = 0  # aggTradeId倒序次数（a<last_a）
-    late_event_dropped: int = 0   # 水位线后到达被丢弃的迟到事件
     buffer_size_samples: List[int] = None  # 缓冲队列大小采样
     
     def __post_init__(self):
@@ -210,6 +211,29 @@ class WatermarkBuffer:
         
         return output
     
+    def force_flush_timeout(self, metrics: MonitoringMetrics) -> List[Tuple]:
+        """强制flush超时消息（定时调用）"""
+        now_ms = int(time.time() * 1000)
+        threshold_ms = now_ms - self.watermark_ms
+        
+        output = []
+        while self.heap and self.heap[0][0] <= threshold_ms:
+            event_ms_out, agg_id_out, data_out = heapq.heappop(self.heap)
+            
+            # 去重/去倒序：丢弃 agg_id <= last_a 的事件
+            if agg_id_out <= self.last_a:
+                if agg_id_out == self.last_a:
+                    metrics.agg_dup_count += 1
+                else:
+                    metrics.agg_backward_count += 1
+                metrics.late_event_dropped += 1
+                continue
+            
+            self.last_a = agg_id_out
+            output.append(data_out)
+        
+        return output
+    
     def flush_all(self, metrics: MonitoringMetrics) -> List[Tuple]:
         """强制输出所有剩余消息（程序退出时），同样应用去重逻辑"""
         output = []
@@ -286,13 +310,15 @@ async def ws_consume(url: str, queue: asyncio.Queue, stop_evt: asyncio.Event, me
                         raise
                     
                     metrics.total_messages += 1
-                    if queue.full():
+                    # 分析模式：阻塞不丢（实时灰度可通过DROP_OLD=true启用丢旧策略）
+                    DROP_OLD = os.getenv("DROP_OLD", "false").lower() == "true"
+                    if DROP_OLD and queue.full():
                         metrics.queue_dropped += 1
                         try:
                             _ = queue.get_nowait()
                         except asyncio.QueueEmpty:
                             pass
-                    await queue.put((time.time(), msg))
+                    await queue.put((time.time(), msg))  # 分析模式默认阻塞
         except Exception as e:
             log.warning("Reconnect due to error: %s", e)
             await asyncio.sleep(backoff)
@@ -308,21 +334,22 @@ async def processor(
 ):
     # P1.1: 支持环境变量配置CVD计算器
     # Step 1: 支持稳健尺度地板配置
+    # Step 1.6 基线配置（默认值）
     cfg = CVDConfig(
-        z_mode=os.getenv("CVD_Z_MODE", "level"),
+        z_mode=os.getenv("CVD_Z_MODE", "delta"),  # Step 1.6: delta模式
         half_life_trades=int(os.getenv("HALF_LIFE_TRADES", "300")),
         winsor_limit=float(os.getenv("WINSOR_LIMIT", "8.0")),
-        freeze_min=int(os.getenv("FREEZE_MIN", "50")),
+        freeze_min=int(os.getenv("FREEZE_MIN", "80")),  # Step 1.6: 80
         stale_threshold_ms=int(os.getenv("STALE_THRESHOLD_MS", "5000")),
-        # Step 1 稳健尺度地板参数
-        scale_mode=os.getenv("SCALE_MODE", "ewma"),
+        # Step 1.6 稳健尺度地板参数
+        scale_mode=os.getenv("SCALE_MODE", "hybrid"),  # Step 1.6: hybrid模式
         ewma_fast_hl=int(os.getenv("EWMA_FAST_HL", "80")),
         mad_window_trades=int(os.getenv("MAD_WINDOW_TRADES", "300")),
         mad_scale_factor=float(os.getenv("MAD_SCALE_FACTOR", "1.4826")),
-        # Step 1 微调参数
-        scale_fast_weight=float(os.getenv("SCALE_FAST_WEIGHT", "0.30")),
-        scale_slow_weight=float(os.getenv("SCALE_SLOW_WEIGHT", "0.70")),
-        mad_multiplier=float(os.getenv("MAD_MULTIPLIER", "1.30")),
+        # Step 1.6 微调参数
+        scale_fast_weight=float(os.getenv("SCALE_FAST_WEIGHT", "0.35")),  # Step 1.6: 0.35
+        scale_slow_weight=float(os.getenv("SCALE_SLOW_WEIGHT", "0.65")),  # Step 1.6: 0.65
+        mad_multiplier=float(os.getenv("MAD_MULTIPLIER", "1.45")),  # Step 1.6: 1.45
         post_stale_freeze=int(os.getenv("POST_STALE_FREEZE", "2")),
     )
     calc = RealCVDCalculator(symbol=symbol, cfg=cfg)
@@ -332,8 +359,12 @@ async def processor(
     watermark = WatermarkBuffer(watermark_ms=watermark_ms)
     log.info("[P0-B] Watermark buffer initialized: watermark_ms=%d", watermark_ms)
     
-    print_every = int(os.getenv("PRINT_EVERY", "100"))
+    print_every = int(os.getenv("PRINT_EVERY", "1000"))  # 分析模式：每1000条打印一次
     processed = 0
+    last_metrics_time = time.time()
+    last_watermark_flush = time.time()
+    METRICS_FLUSH_INTERVAL_MS = 10000  # 每10秒刷新指标
+    WATERMARK_FLUSH_INTERVAL_MS = 200  # 每200ms强制flush水位线
     
     while not stop_evt.is_set():
         try:
@@ -393,6 +424,39 @@ async def processor(
                     metrics.reconnect_count,
                     latency_ms,
                 )
+        
+        # 定时flush水位线（每200ms）
+        current_time = time.time()
+        if (current_time - last_watermark_flush) * 1000 >= WATERMARK_FLUSH_INTERVAL_MS:
+            # 强制flush水位线中的超时消息
+            ready_list = watermark.force_flush_timeout(metrics)
+            for ready_parsed in ready_list:
+                price_r, qty_r, is_buy_r, event_ms_r, agg_trade_id_r = ready_parsed
+                ret = calc.update_with_trade(price=price_r, qty=qty_r, is_buy=is_buy_r, event_time_ms=event_ms_r)
+                processed += 1
+                
+                latency_ms = (time.time() * 1000 - event_ms_r) if event_ms_r else 0.0
+                
+                record = CVDRecord(
+                    timestamp=time.time(),  # 使用当前时间，不复用旧的ts_recv
+                    event_time_ms=event_ms_r,
+                    agg_trade_id=agg_trade_id_r,
+                    price=price_r,
+                    qty=qty_r,
+                    is_buy=is_buy_r,
+                    cvd=ret["cvd"],
+                    z_cvd=ret["z_cvd"],
+                    ema_cvd=ret["ema_cvd"],
+                    warmup=ret["meta"]["warmup"],
+                    std_zero=ret["meta"]["std_zero"],
+                    bad_points=ret["meta"]["bad_points"],
+                    queue_dropped=metrics.queue_dropped,
+                    reconnect_count=metrics.reconnect_count,
+                    latency_ms=latency_ms,
+                )
+                records.append(record)
+            
+            last_watermark_flush = current_time
     
     # P0-B: 程序退出时，flush所有剩余消息（应用去重逻辑）
     log.info("[P0-B] Flushing watermark buffer: %d messages remaining", len(watermark.heap))
@@ -443,12 +507,16 @@ async def main():
     
     url = f"wss://fstream.binancefuture.com/stream?streams={symbol.lower()}@aggTrade"
     
-    # 初始化
-    queue_size = 1024
+    # 初始化 - 分析模式：阻塞不丢，队列足够大
+    queue_size = 50000  # 分析模式：50k队列，阻塞不丢
     q: asyncio.Queue = asyncio.Queue(maxsize=queue_size)
     stop_evt = asyncio.Event()
     metrics = MonitoringMetrics()
     records: List[CVDRecord] = []
+    
+    # 批量写盘配置（暂时保持内存，最后统一导出）
+    BATCH_SIZE = 200  # 每200条批量写盘
+    BATCH_MS = 200    # 每200ms批量写盘
     
     # 信号处理
     loop = asyncio.get_running_loop()
