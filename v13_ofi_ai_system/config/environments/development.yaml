@@ -1,0 +1,73 @@
+# 开发环境配置
+# 覆盖 system.yaml 中的配置
+# 用于本地开发和调试
+
+# 系统配置覆盖
+system:
+  environment: "development"
+
+# 数据源配置覆盖
+data_source:
+  # 开发环境使用较短的超时时间
+  websocket:
+    timeout: 15
+
+# 性能配置覆盖
+performance:
+  # 开发环境使用较小的队列
+  queue:
+    max_size: 10000
+  
+  # 更频繁的刷新（便于调试）
+  flush:
+    watermark_interval_ms: 100
+    metrics_interval_ms: 5000
+  
+  # 更频繁的日志打印
+  logging:
+    print_every_trades: 100
+    progress_interval_seconds: 30
+
+# 日志配置覆盖
+logging:
+  # 开发环境使用DEBUG级别
+  level: "DEBUG"
+  
+  # 详细的日志格式
+  format: "%(asctime)s - %(name)s - [%(levelname)s] - %(filename)s:%(lineno)d - %(message)s"
+  
+  file:
+    filename: "development.log"
+    max_size_mb: 50
+    backup_count: 3
+
+# 监控配置覆盖
+monitoring:
+  # 开发环境启用详细监控
+  enabled: true
+  interval_seconds: 5
+
+# 特性开关覆盖
+features:
+  # 开发环境启用详细日志
+  verbose_logging: true
+  
+  # 开发环境可以启用性能分析
+  profiling: true
+  
+  # 开发环境可以启用实验性功能
+  experimental: true
+
+# 测试配置覆盖
+testing:
+  mode: "unit"
+  coverage: true
+
+# 数据库配置覆盖
+database:
+  # 开发环境使用SQLite
+  enabled: false
+  type: "sqlite"
+  sqlite:
+    database: "data/dev.db"
+

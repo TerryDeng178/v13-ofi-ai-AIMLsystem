@@ -1,0 +1,350 @@
+# V13 OFI+CVD+AI Trading System - 系统配置
+# 版本: v13.0
+# 创建日期: 2025-10-19
+# 最后更新: 2025-10-19
+
+# ============================================================================
+# 系统元信息
+# ============================================================================
+system:
+  name: "OFI_CVD_AI_Trading_System"
+  version: "v13.0"
+  # 环境: development | testing | production
+  # 可通过环境变量 ENV 覆盖
+  environment: "development"
+  
+  # 系统描述
+  description: "基于订单流失衡(OFI)和累积成交量差(CVD)的AI增强交易系统"
+  
+  # 系统作者
+  author: "V13 Team"
+  
+  # 创建时间
+  created_at: "2025-10-19"
+
+# ============================================================================
+# 数据源配置
+# ============================================================================
+data_source:
+  # 数据提供商
+  provider: "binance"
+  
+  # 默认交易对
+  default_symbol: "ETHUSDT"
+  
+  # 支持的交易对列表
+  symbols:
+    - "ETHUSDT"
+    - "BTCUSDT"
+  
+  # WebSocket配置
+  websocket:
+    # 连接超时（秒）
+    timeout: 30
+    
+    # 重连间隔（秒）
+    reconnect_interval: 5
+    
+    # 最大重连次数（0表示无限重连）
+    max_reconnect_attempts: 0
+    
+    # Ping间隔（秒）
+    ping_interval: 20
+
+# ============================================================================
+# 组件配置
+# ============================================================================
+components:
+  # CVD (Cumulative Volume Delta) 组件
+  cvd:
+    # 是否启用
+    enabled: true
+    
+    # CVD配置文件路径（相对于config目录）
+    config_file: "profiles/analysis.env"
+    
+    # 实时模式配置文件
+    realtime_config_file: "profiles/realtime.env"
+    
+    # 描述
+    description: "累积成交量差计算和Z-score标准化"
+  
+  # OFI (Order Flow Imbalance) 组件
+  ofi:
+    # 是否启用
+    enabled: true
+    
+    # OFI配置文件路径
+    config_file: "binance_config.yaml"
+    
+    # 描述
+    description: "订单流失衡计算和信号分析"
+  
+  # AI 组件
+  ai:
+    # 是否启用（当前阶段未启用）
+    enabled: false
+    
+    # AI模型目录
+    models_dir: "models"
+    
+    # 描述
+    description: "机器学习模型训练和预测（Stage3）"
+  
+  # 交易组件
+  trading:
+    # 是否启用（当前阶段未启用）
+    enabled: false
+    
+    # 交易配置文件
+    config_file: "trading.yaml"
+    
+    # 描述
+    description: "实盘交易执行和风险管理（Stage2）"
+
+# ============================================================================
+# 路径配置
+# ============================================================================
+paths:
+  # 数据目录
+  data_dir: "data"
+  
+  # 日志目录
+  logs_dir: "logs"
+  
+  # 报告目录
+  reports_dir: "docs/reports"
+  
+  # AI模型目录
+  models_dir: "models"
+  
+  # 配置目录
+  config_dir: "config"
+  
+  # 归档目录
+  archive_dir: "../archive"
+  
+  # 临时文件目录
+  temp_dir: "temp"
+
+# ============================================================================
+# 性能配置
+# ============================================================================
+performance:
+  # 队列配置
+  queue:
+    # 最大队列大小
+    max_size: 50000
+    
+    # 队列满时的行为: block | drop_old | drop_new
+    # block: 阻塞等待（分析模式）
+    # drop_old: 丢弃旧消息（实时模式）
+    # drop_new: 丢弃新消息（不推荐）
+    full_behavior: "block"
+  
+  # 批处理配置
+  batch:
+    # 批处理大小
+    size: 1000
+    
+    # 批处理超时（毫秒）
+    timeout_ms: 200
+  
+  # 刷新配置
+  flush:
+    # Watermark缓冲区刷新间隔（毫秒）
+    watermark_interval_ms: 200
+    
+    # 指标刷新间隔（毫秒）
+    metrics_interval_ms: 10000
+    
+    # 数据刷新间隔（毫秒）
+    data_interval_ms: 60000
+  
+  # 打印/日志频率
+  logging:
+    # 诊断信息打印频率（每N笔交易）
+    print_every_trades: 1000
+    
+    # 进度打印频率（秒）
+    progress_interval_seconds: 60
+
+# ============================================================================
+# 日志配置
+# ============================================================================
+logging:
+  # 日志级别: DEBUG | INFO | WARNING | ERROR | CRITICAL
+  level: "INFO"
+  
+  # 日志格式
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  
+  # 日期格式
+  date_format: "%Y-%m-%d %H:%M:%S"
+  
+  # 日志文件配置
+  file:
+    # 是否启用文件日志
+    enabled: true
+    
+    # 日志文件路径（相对于logs_dir）
+    filename: "system.log"
+    
+    # 单个日志文件最大大小（MB）
+    max_size_mb: 100
+    
+    # 日志文件备份数量
+    backup_count: 5
+  
+  # 控制台日志配置
+  console:
+    # 是否启用控制台日志
+    enabled: true
+    
+    # 控制台日志级别（可以与文件日志级别不同）
+    level: "INFO"
+
+# ============================================================================
+# 监控配置
+# ============================================================================
+monitoring:
+  # 是否启用监控
+  enabled: true
+  
+  # 监控指标收集间隔（秒）
+  interval_seconds: 10
+  
+  # 指标类型
+  metrics:
+    # 系统指标
+    system:
+      - "cpu_usage"
+      - "memory_usage"
+      - "disk_usage"
+    
+    # 应用指标
+    application:
+      - "queue_size"
+      - "processing_rate"
+      - "latency"
+      - "error_rate"
+    
+    # 业务指标
+    business:
+      - "trade_count"
+      - "cvd_value"
+      - "ofi_value"
+      - "signal_count"
+
+# ============================================================================
+# 数据库配置（未来使用）
+# ============================================================================
+database:
+  # 是否启用数据库
+  enabled: false
+  
+  # 数据库类型: sqlite | postgresql | mysql
+  type: "sqlite"
+  
+  # SQLite配置
+  sqlite:
+    database: "data/system.db"
+  
+  # PostgreSQL配置（示例）
+  postgresql:
+    host: "localhost"
+    port: 5432
+    database: "ofi_cvd_ai"
+    # 用户名和密码应从环境变量读取
+    # username: ${DB_USER}
+    # password: ${DB_PASSWORD}
+
+# ============================================================================
+# 测试配置
+# ============================================================================
+testing:
+  # 测试模式
+  mode: "unit"  # unit | integration | e2e
+  
+  # 测试数据目录
+  test_data_dir: "tests/data"
+  
+  # 测试结果目录
+  test_results_dir: "tests/results"
+  
+  # 是否生成测试覆盖率报告
+  coverage: true
+
+# ============================================================================
+# 特性开关（Feature Flags）
+# ============================================================================
+features:
+  # 是否启用新配置系统（本配置文件）
+  use_system_config: false  # 默认false，需要明确启用
+  
+  # 是否启用详细日志
+  verbose_logging: false
+  
+  # 是否启用性能分析
+  profiling: false
+  
+  # 是否启用实验性功能
+  experimental: false
+
+# ============================================================================
+# 通知配置（未来使用）
+# ============================================================================
+notifications:
+  # 是否启用通知
+  enabled: false
+  
+  # 通知方式: email | slack | telegram | webhook
+  channels:
+    - email
+  
+  # 邮件配置
+  email:
+    smtp_server: "smtp.gmail.com"
+    smtp_port: 587
+    # 凭据应从环境变量读取
+    # username: ${EMAIL_USER}
+    # password: ${EMAIL_PASSWORD}
+    # to_addresses:
+    #   - "admin@example.com"
+
+# ============================================================================
+# 安全配置
+# ============================================================================
+security:
+  # API密钥加密
+  encrypt_api_keys: true
+  
+  # 敏感数据脱敏
+  mask_sensitive_data: true
+  
+  # 允许的IP地址（空表示允许所有）
+  allowed_ips: []
+  
+  # 速率限制
+  rate_limiting:
+    enabled: false
+    max_requests_per_minute: 100
+
+# ============================================================================
+# 备注
+# ============================================================================
+# 1. 环境变量覆盖：所有配置都可以通过环境变量覆盖
+#    格式：SECTION_KEY（大写，用下划线连接）
+#    例如：PERFORMANCE_QUEUE_MAX_SIZE=10000
+#
+# 2. 环境特定配置：通过 config/environments/{ENV}.yaml 覆盖
+#    开发环境：ENV=development
+#    测试环境：ENV=testing
+#    生产环境：ENV=production
+#
+# 3. 配置优先级：环境变量 > 环境配置 > 系统配置 > 默认值
+#
+# 4. 敏感信息：API密钥、密码等应通过环境变量设置，不要写入配置文件
+#
+# 5. 路径：相对路径会自动转换为相对于项目根目录的绝对路径
+

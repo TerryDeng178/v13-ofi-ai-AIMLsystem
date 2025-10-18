@@ -1,8 +1,8 @@
 # 📚 V13 OFI+CVD+AI项目核心文档索引
 
-**版本**: V1.0  
+**版本**: V1.1  
 **更新时间**: 2025-10-19  
-**状态**: 🟢 完整
+**状态**: 🟢 完整（新增统一配置系统）
 
 ---
 
@@ -196,7 +196,81 @@ python analysis_cvd.py \
 
 ## 4. 配置文件
 
-### 4.1 配置文件清单
+### 4.1 统一系统配置（新）⭐
+
+#### 📄 系统主配置
+**文件**: [`config/system.yaml`](./config/system.yaml)
+
+**核心内容**:
+- **系统配置**: 元信息、版本、环境
+- **数据源配置**: WebSocket连接、重连策略
+- **组件配置**: CVD/OFI/AI/Trading组件开关
+- **性能配置**: 队列、批处理、刷新频率
+- **日志配置**: 日志级别、格式、输出
+- **路径配置**: 数据、日志、报告目录
+- **监控配置**: 指标收集、监控间隔
+- **特性开关**: Feature Flags
+
+**关键参数**:
+```yaml
+performance:
+  queue:
+    max_size: 50000              # 队列大小
+    full_behavior: "block"       # 队列满时行为
+  flush:
+    watermark_interval_ms: 200   # Watermark刷新间隔
+    metrics_interval_ms: 10000   # 指标刷新间隔
+  logging:
+    print_every_trades: 1000     # 打印频率
+
+logging:
+  level: "INFO"                  # 日志级别
+```
+
+#### 📄 环境特定配置
+**文件**: 
+- [`config/environments/development.yaml`](./config/environments/development.yaml) - 开发环境
+- [`config/environments/testing.yaml`](./config/environments/testing.yaml) - 测试环境
+- [`config/environments/production.yaml`](./config/environments/production.yaml) - 生产环境
+
+**配置优先级**: 环境变量 > 环境配置 > 系统配置
+
+#### 📄 配置加载器
+**文件**: [`src/utils/config_loader.py`](./src/utils/config_loader.py)
+
+**功能**:
+- 加载和解析YAML配置
+- 环境配置覆盖
+- 环境变量覆盖
+- 配置验证
+- 路径自动解析
+
+**使用示例**:
+```python
+from src.utils.config_loader import load_config, get_config
+
+# 加载完整配置
+config = load_config()
+
+# 获取特定配置
+queue_size = get_config('performance.queue.max_size')
+```
+
+#### 📄 配置系统指南
+**文件**: 
+- [`config/README.md`](./config/README.md) - 配置文件快速说明
+- [`docs/SYSTEM_CONFIG_GUIDE.md`](./docs/SYSTEM_CONFIG_GUIDE.md) - 详细使用指南
+
+**关键特性**:
+- ✅ **分层架构**: 系统配置 → 环境配置 → 环境变量
+- ✅ **环境隔离**: 开发/测试/生产独立配置
+- ✅ **向后兼容**: 完全兼容现有`.env`文件
+- ✅ **零侵入**: 不需要修改现有代码
+- ✅ **灵活覆盖**: 支持运行时环境变量覆盖
+
+---
+
+### 4.2 CVD组件配置文件
 
 #### 核心配置文件
 | 文件 | 说明 | 用途 |
@@ -215,7 +289,7 @@ python analysis_cvd.py \
 
 ---
 
-### 4.2 配置参数对比
+### 4.3 配置参数对比
 
 #### 📄 配置参数详细对比
 **文件**: [`docs/CONFIG_PARAMETERS_GUIDE.md`](./docs/CONFIG_PARAMETERS_GUIDE.md)

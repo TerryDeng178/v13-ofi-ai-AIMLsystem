@@ -1,0 +1,66 @@
+# 测试环境配置
+# 覆盖 system.yaml 中的配置
+# 用于集成测试和验证
+
+# 系统配置覆盖
+system:
+  environment: "testing"
+
+# 数据源配置覆盖
+data_source:
+  # 测试环境使用标准超时
+  websocket:
+    timeout: 30
+    reconnect_interval: 3
+
+# 性能配置覆盖
+performance:
+  # 测试环境使用中等大小队列
+  queue:
+    max_size: 25000
+  
+  # 标准刷新频率
+  flush:
+    watermark_interval_ms: 200
+    metrics_interval_ms: 10000
+  
+  # 标准日志打印
+  logging:
+    print_every_trades: 500
+    progress_interval_seconds: 60
+
+# 日志配置覆盖
+logging:
+  # 测试环境使用INFO级别
+  level: "INFO"
+  
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  
+  file:
+    filename: "testing.log"
+    max_size_mb: 100
+    backup_count: 5
+
+# 监控配置覆盖
+monitoring:
+  enabled: true
+  interval_seconds: 10
+
+# 特性开关覆盖
+features:
+  verbose_logging: false
+  profiling: false
+  experimental: false
+
+# 测试配置覆盖
+testing:
+  mode: "integration"
+  coverage: true
+
+# 数据库配置覆盖
+database:
+  enabled: false
+  type: "sqlite"
+  sqlite:
+    database: "data/test.db"
+
