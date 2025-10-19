@@ -41,7 +41,7 @@ groups:
           runbook_url: "https://docs.example.com/strategy-parameter-troubleshooting"
 
       - alert: StrategyMetricsHeartbeatMissing
-        expr: absent(strategy_mode_active{env="testing"}) or (time() - max(strategy_mode_last_change_timestamp{env="testing"})) > 120
+        expr: absent(strategy_mode_active{env="testing"}) or (time() - max without(instance,pod) (strategy_metrics_last_scrape_timestamp{env="testing"})) > 120
         for: 2m
         labels:
           severity: critical
