@@ -1,0 +1,17 @@
+buckets:
+  liquidity:
+    active: &id001
+      swing_L: 13
+      z_hi: 2.0
+      z_mid: 0.8
+    quiet:
+      swing_L: 21
+      z_hi: 2.0
+      z_mid: 0.4
+  session:
+    day: *id001
+  source:
+    CVD_ONLY: *id001
+created_at: '2025-10-20 05:12:51'
+description: 分桶最佳参数配置
+version: v1.0

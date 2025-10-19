@@ -106,16 +106,22 @@ class RealCVDCalculator:
         "_post_stale_remaining", "_prev_event_time_ms"
     )
     
-    def __init__(self, symbol: str, cfg: Optional[CVDConfig] = None) -> None:
+    def __init__(self, symbol: str, cfg: Optional[CVDConfig] = None, config_loader=None) -> None:
         """
         初始化CVD计算器
         
         参数:
             symbol: 交易对符号（如"ETHUSDT"）
             cfg: CVD配置对象，默认None使用默认配置
+            config_loader: 配置加载器实例，用于从统一配置系统加载参数
         """
         self.symbol = (symbol or "").upper()
-        self.cfg = cfg or CVDConfig()
+        
+        if config_loader:
+            # 从统一配置系统加载参数
+            self.cfg = self._load_from_config_loader(config_loader, symbol)
+        else:
+            self.cfg = cfg or CVDConfig()
         self.cvd: float = 0.0
         self.ema_cvd: Optional[float] = None
         self._hist: deque[float] = deque(maxlen=self.cfg.z_window)
@@ -141,6 +147,80 @@ class RealCVDCalculator:
         
         # 配置验证和诊断日志
         self._print_effective_config()
+    
+    def _load_from_config_loader(self, config_loader, symbol: str) -> CVDConfig:
+        """
+        从统一配置系统加载CVD参数
+        
+        参数:
+            config_loader: 配置加载器实例
+            symbol: 交易对符号
+            
+        返回:
+            CVD配置对象
+        """
+        try:
+            # 获取CVD配置
+            cvd_config = config_loader.get('components.cvd', {})
+            
+            # 提取配置参数
+            z_window = cvd_config.get('z_window', 300)
+            ema_alpha = cvd_config.get('ema_alpha', 0.2)
+            use_tick_rule = cvd_config.get('use_tick_rule', True)
+            warmup_min = cvd_config.get('warmup_min', 5)
+            
+            # P1.1 Delta-Z配置
+            z_mode = cvd_config.get('z_mode', 'level')
+            half_life_trades = cvd_config.get('half_life_trades', 300)
+            winsor_limit = cvd_config.get('winsor_limit', 8.0)
+            freeze_min = cvd_config.get('freeze_min', 50)
+            stale_threshold_ms = cvd_config.get('stale_threshold_ms', 5000)
+            
+            # 空窗后冻结配置
+            soft_freeze_ms = cvd_config.get('soft_freeze_ms', 4000)
+            hard_freeze_ms = cvd_config.get('hard_freeze_ms', 5000)
+            
+            # Step 1 稳健尺度地板配置
+            scale_mode = cvd_config.get('scale_mode', 'ewma')
+            ewma_fast_hl = cvd_config.get('ewma_fast_hl', 80)
+            mad_window_trades = cvd_config.get('mad_window_trades', 300)
+            mad_scale_factor = cvd_config.get('mad_scale_factor', 1.4826)
+            
+            # Step 1 微调配置
+            scale_fast_weight = cvd_config.get('scale_fast_weight', 0.30)
+            scale_slow_weight = cvd_config.get('scale_slow_weight', 0.70)
+            mad_multiplier = cvd_config.get('mad_multiplier', 1.30)
+            post_stale_freeze = cvd_config.get('post_stale_freeze', 2)
+            
+            # 创建配置对象
+            return CVDConfig(
+                z_window=z_window,
+                ema_alpha=ema_alpha,
+                use_tick_rule=use_tick_rule,
+                warmup_min=warmup_min,
+                z_mode=z_mode,
+                half_life_trades=half_life_trades,
+                winsor_limit=winsor_limit,
+                freeze_min=freeze_min,
+                stale_threshold_ms=stale_threshold_ms,
+                soft_freeze_ms=soft_freeze_ms,
+                hard_freeze_ms=hard_freeze_ms,
+                scale_mode=scale_mode,
+                ewma_fast_hl=ewma_fast_hl,
+                mad_window_trades=mad_window_trades,
+                mad_scale_factor=mad_scale_factor,
+                scale_fast_weight=scale_fast_weight,
+                scale_slow_weight=scale_slow_weight,
+                mad_multiplier=mad_multiplier,
+                post_stale_freeze=post_stale_freeze
+            )
+            
+        except Exception as e:
+            # 如果配置加载失败，使用默认配置并记录警告
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(f"Failed to load CVD config from config_loader: {e}. Using default config.")
+            return CVDConfig()
 
     def _print_effective_config(self) -> None:
         """打印有效配置，用于验证Step 1.6是否正确加载"""

@@ -9,10 +9,11 @@ Date: 2025-10-19
 """
 
 from dataclasses import dataclass
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Union
 import math
 import time
 from enum import Enum
+from pathlib import Path
 
 
 class SignalType(Enum):
@@ -66,14 +67,19 @@ class OFI_CVD_Fusion:
     5. 暖启动保护: 数据不足时返回neutral
     """
     
-    def __init__(self, cfg: OFICVDFusionConfig = None):
+    def __init__(self, cfg: OFICVDFusionConfig = None, config_loader=None):
         """
         初始化融合器
         
         Args:
             cfg: 融合配置，默认使用标准配置
+            config_loader: 配置加载器实例，用于从统一配置系统加载参数
         """
-        self.cfg = cfg or OFICVDFusionConfig()
+        if config_loader:
+            # 从统一配置系统加载参数
+            self.cfg = self._load_from_config_loader(config_loader)
+        else:
+            self.cfg = cfg or OFICVDFusionConfig()
         
         # 权重归一化
         total_weight = self.cfg.w_ofi + self.cfg.w_cvd
@@ -97,6 +103,74 @@ class OFI_CVD_Fusion:
             'invalid_inputs': 0,
             'lag_exceeded': 0
         }
+    
+    def _load_from_config_loader(self, config_loader) -> OFICVDFusionConfig:
+        """
+        从统一配置系统加载融合指标参数
+        
+        Args:
+            config_loader: 配置加载器实例
+            
+        Returns:
+            融合指标配置对象
+        """
+        try:
+            # 获取融合指标配置
+            fusion_config = config_loader.get('fusion_metrics', {})
+            
+            # 提取权重配置
+            weights = fusion_config.get('weights', {})
+            w_ofi = weights.get('w_ofi', 0.6)
+            w_cvd = weights.get('w_cvd', 0.4)
+            
+            # 提取阈值配置
+            thresholds = fusion_config.get('thresholds', {})
+            fuse_buy = thresholds.get('fuse_buy', 1.5)
+            fuse_strong_buy = thresholds.get('fuse_strong_buy', 2.5)
+            fuse_sell = thresholds.get('fuse_sell', -1.5)
+            fuse_strong_sell = thresholds.get('fuse_strong_sell', -2.5)
+            
+            # 提取一致性配置
+            consistency = fusion_config.get('consistency', {})
+            min_consistency = consistency.get('min_consistency', 0.3)
+            strong_min_consistency = consistency.get('strong_min_consistency', 0.7)
+            
+            # 提取数据处理配置
+            data_processing = fusion_config.get('data_processing', {})
+            z_clip = data_processing.get('z_clip', 5.0)
+            max_lag = data_processing.get('max_lag', 0.300)
+            warmup_samples = data_processing.get('warmup_samples', 30)
+            
+            # 提取去噪配置
+            denoising = fusion_config.get('denoising', {})
+            hysteresis_exit = denoising.get('hysteresis_exit', 1.2)
+            cooldown_secs = denoising.get('cooldown_secs', 1.0)
+            min_duration = denoising.get('min_duration', 2)
+            
+            # 创建配置对象
+            return OFICVDFusionConfig(
+                w_ofi=w_ofi,
+                w_cvd=w_cvd,
+                fuse_buy=fuse_buy,
+                fuse_strong_buy=fuse_strong_buy,
+                fuse_sell=fuse_sell,
+                fuse_strong_sell=fuse_strong_sell,
+                min_consistency=min_consistency,
+                strong_min_consistency=strong_min_consistency,
+                z_clip=z_clip,
+                max_lag=max_lag,
+                hysteresis_exit=hysteresis_exit,
+                cooldown_secs=cooldown_secs,
+                min_consecutive=min_duration,
+                min_warmup_samples=warmup_samples
+            )
+            
+        except Exception as e:
+            # 如果配置加载失败，使用默认配置并记录警告
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(f"Failed to load fusion metrics config from config_loader: {e}. Using default config.")
+            return OFICVDFusionConfig()
     
     def _consistency(self, z_ofi: float, z_cvd: float) -> float:
         """

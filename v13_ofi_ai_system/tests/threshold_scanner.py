@@ -8,6 +8,14 @@ Author: V13 OFI+CVD AI Trading System
 Date: 2025-10-19
 """
 
+import sys
+import os
+from pathlib import Path
+
+# 添加项目根目录到Python路径
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
+
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt

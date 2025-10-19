@@ -1,139 +1,323 @@
-# 生产环境配置
-# 覆盖 system.yaml 中的配置
-# 用于实盘交易和生产环境
+# V13 OFI+CVD+AI Trading System - 生产环境配置
+# 版本: v13.0
+# 创建日期: 2025-10-20
+# 用途: 背离检测模块灰度上线配置
 
-# 系统配置覆盖
+# ============================================================================
+# 系统元信息
+# ============================================================================
 system:
+  name: "OFI_CVD_AI_Trading_System"
+  version: "v13.0"
   environment: "production"
+  description: "基于订单流失衡(OFI)和累积成交量差(CVD)的AI增强交易系统 - 生产环境"
+  author: "V13 Team"
+  created_at: "2025-10-20"
 
-# 数据源配置覆盖
-data_source:
-  # 生产环境使用较长的超时时间
-  websocket:
-    timeout: 60
-    reconnect_interval: 10
-    max_reconnect_attempts: 10  # 生产环境限制重连次数
+# ============================================================================
+# 融合指标配置 - 生产环境
+# ============================================================================
+fusion_metrics:
+  # 生产环境使用更保守的参数
+  thresholds:
+    fuse_strong_buy: 3.0      # 更严格的强买入阈值
+    fuse_strong_sell: -3.0    # 更严格的强卖出阈值
+    fuse_buy: 2.0             # 提高买入阈值
+    fuse_sell: -2.0           # 提高卖出阈值
+  
+  # 生产环境一致性要求更高
+  consistency:
+    min_consistency: 0.4      # 提高最小一致性要求
+    strong_min_consistency: 0.8  # 提高强信号一致性要求
+  
+  # 生产环境性能优化
+  performance:
+    max_events_per_second: 200  # 提高处理能力
+    batch_size: 20
+    queue_size: 2000
+  
+  # 生产环境监控增强
+  monitoring:
+    prometheus:
+      port: 8002
+      scrape_interval: "3s"  # 更频繁的监控
+    
+    alerts:
+      consistency_threshold: 0.15  # 更严格的告警阈值
+      lag_threshold: 0.3
+  
+  # 生产环境热更新
+  hot_reload:
+    enabled: true
+    reload_delay: 2.0  # 生产环境增加延迟确保文件写入完成
+    backup_config: true
+    log_changes: true
 
-# 性能配置覆盖
+# ============================================================================
+# 背离检测模块配置 - 灰度上线
+# ============================================================================
+divergence_detection:
+  # 模块开关
+  enabled: true
+  
+  # 参数文件路径
+  params_file: "runs/real_test/best_global.yaml"
+  bucket_overrides: "runs/real_test/best_by_bucket.yaml"
+  calibration_file: "config/calibration/divergence_score_calibration.json"
+  
+  # 热更新配置
+  hot_update:
+    enabled: true
+    watch_paths:
+      - "runs/real_test/best_global.yaml"
+      - "runs/real_test/best_by_bucket.yaml"
+      - "config/calibration/divergence_score_calibration.json"
+    reload_delay: 2.0  # 生产环境增加延迟确保文件写入完成
+    backup_config: true
+    log_changes: true
+  
+  # 生产环境参数覆盖
+  production_overrides:
+    # 性能优化
+    performance:
+      max_events_per_second: 200  # 生产环境提高处理能力
+      batch_size: 20
+      queue_size: 2000
+      worker_threads: 8
+    
+    # 监控增强
+    monitoring:
+      prometheus:
+        port: 8003
+        path: "/metrics"
+        scrape_interval: "3s"  # 更频繁的监控
+      
+      grafana:
+        dashboard_uid: "divergence-monitoring-prod"
+        refresh_interval: "3s"
+      
+      alerts:
+        latency_threshold: 0.01  # 10ms阈值
+        event_rate_min: 0.5      # 最小事件率
+        score_median_min: 50     # 最小中位数分数
+        error_rate_max: 0.01     # 最大错误率1%
+  
+  # 灰度上线配置
+  canary:
+    enabled: true
+    target_symbols: ["BTCUSDT"]  # 首批只对BTCUSDT开放
+    max_symbols: 5               # 最大支持品种数
+    observation_period_minutes: 60  # 观察期60分钟
+    success_threshold: 0.95      # 成功率阈值95%
+  
+  # 安全配置
+  safety:
+    max_position_impact: 0.01    # 最大仓位影响1%
+    max_daily_events: 10000      # 每日最大事件数
+    emergency_stop: false        # 紧急停止开关
+
+# ============================================================================
+# 执行层配置 - 生产环境只读模式
+# ============================================================================
+execution:
+  # 执行开关 - 灰度阶段保持关闭
+  enabled: false
+  dry_run: true
+  
+  # 风险控制
+  risk_management:
+    max_position_size: 0.0       # 禁止开仓
+    max_order_value: 0.0         # 禁止下单
+    emergency_stop: true         # 紧急停止
+  
+  # 日志记录
+  logging:
+    level: "INFO"
+    log_all_signals: true
+    save_signal_history: true
+    history_retention_days: 30
+
+# ============================================================================
+# 监控配置 - 生产环境
+# ============================================================================
+monitoring:
+  # 监控开关
+  enabled: true
+  
+  # Prometheus配置
+  prometheus:
+    config_file: "runs/metrics_test/prometheus_divergence.yml"
+    exporter_script: "runs/metrics_test/divergence_metrics_exporter.py"
+    port: 8003
+    scrape_interval: "3s"
+  
+  # Grafana配置
+  grafana:
+    dashboard_file: "runs/metrics_test/dashboards/divergence_overview.json"
+    dashboard_uid: "divergence-monitoring-prod"
+    refresh_interval: "3s"
+    auto_import: true
+  
+  # 告警配置
+  alerting:
+    rules_file: "runs/metrics_test/alerting_rules/divergence_alerts.yaml"
+    enabled: true
+    notification_channels:
+      - "email"
+      - "slack"
+  
+  # SLO配置
+  slo:
+    # 事件延迟SLO
+    event_latency_p95_max: 0.0025  # 2.5ms
+    event_latency_p95_warning: 0.002  # 2ms
+    
+    # 管线延迟SLO
+    pipeline_latency_p95_max: 0.1  # 100ms
+    pipeline_latency_p95_warning: 0.05  # 50ms
+    
+    # 背离模块计算延迟SLO
+    divergence_calc_p95_max: 0.01  # 10ms
+    divergence_calc_p95_warning: 0.005  # 5ms
+    
+    # 指标闭合误差SLO
+    metrics_closure_error_max: 0.1  # 10%
+    metrics_closure_error_warning: 0.05  # 5%
+    
+    # 可用性SLO
+    availability_min: 0.999  # 99.9%
+    error_rate_max: 0.01  # 1%
+
+# ============================================================================
+# 日志配置 - 生产环境
+# ============================================================================
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  date_format: "%Y-%m-%d %H:%M:%S"
+  
+  # 文件日志
+  file:
+    enabled: true
+    filename: "logs/divergence_prod.log"
+    max_size_mb: 100
+    backup_count: 10
+    rotation: "daily"
+  
+  # 控制台日志
+  console:
+    enabled: true
+    level: "WARNING"  # 生产环境减少控制台输出
+  
+  # 结构化日志
+  structured:
+    enabled: true
+    format: "json"
+    include_metadata: true
+
+# ============================================================================
+# 安全配置 - 生产环境
+# ============================================================================
+security:
+  # API密钥加密
+  encrypt_api_keys: true
+  
+  # 敏感数据脱敏
+  mask_sensitive_data: true
+  
+  # 访问控制
+  access_control:
+    allowed_ips: []  # 空表示允许所有，实际部署时配置
+    rate_limiting:
+      enabled: true
+      max_requests_per_minute: 1000
+  
+  # 审计日志
+  audit:
+    enabled: true
+    log_all_operations: true
+    retention_days: 90
+
+# ============================================================================
+# 性能配置 - 生产环境
+# ============================================================================
 performance:
-  # 生产环境使用大队列
+  # 队列配置
   queue:
     max_size: 100000
+    full_behavior: "drop_old"  # 生产环境丢弃旧消息
   
-  # 生产环境优化刷新频率
+  # 批处理配置
+  batch:
+    size: 2000
+    timeout_ms: 100
+  
+  # 刷新配置
   flush:
-    watermark_interval_ms: 200
-    metrics_interval_ms: 30000
+    watermark_interval_ms: 100
+    metrics_interval_ms: 5000
+    data_interval_ms: 30000
   
-  # 减少日志打印频率（提高性能）
-  logging:
-    print_every_trades: 5000
-    progress_interval_seconds: 300
+  # 内存管理
+  memory:
+    max_usage_mb: 2048
+    gc_threshold: 0.8
+    cleanup_interval_seconds: 300
 
-# 日志配置覆盖
-logging:
-  # 生产环境使用WARNING级别（减少日志量）
-  level: "WARNING"
-  
-  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-  
-  file:
-    filename: "production.log"
-    max_size_mb: 500
-    backup_count: 10
-  
-  console:
-    # 生产环境可以关闭控制台日志
+# ============================================================================
+# 故障恢复配置
+# ============================================================================
+fault_tolerance:
+  # 自动恢复
+  auto_recovery:
     enabled: true
-    level: "ERROR"  # 只输出错误信息
-
-# 监控配置覆盖
-monitoring:
-  # 生产环境必须启用监控
-  enabled: true
-  interval_seconds: 30
-
-# 特性开关覆盖
-features:
-  # 生产环境关闭所有调试特性
-  verbose_logging: false
-  profiling: false
-  experimental: false
+    max_retry_attempts: 3
+    retry_delay_seconds: 5
   
-  # 策略特性（生产环境）
-  strategy:
-    dynamic_mode_enabled: true    # 生产环境启用动态切换
-    throttle_in_quiet: true       # 安静期降采样（节省资源）
-    sample_ratio_quiet: 0.3       # 30%采样
-    dry_run: false                # 生产环境实际应用参数
-    cli_override_priority: true   # 保留CLI覆盖能力（应急用）
-
-# 策略模式配置覆盖（生产环境 - 保守设置）
-strategy:
-  mode: "auto"  # 生产环境使用自动模式
-  
-  # 生产环境使用标准迟滞参数（稳健）
-  hysteresis:
-    window_secs: 60              # 标准60秒
-    min_active_windows: 3        # 标准3个窗口
-    min_quiet_windows: 6         # 标准6个窗口
-  
-  triggers:
-    market:
-      # 生产环境使用标准阈值（数字资产市场）
-      min_trades_per_min: 500
-      min_quote_updates_per_sec: 100
-      max_spread_bps: 5
-      min_volatility_bps: 10
-      min_volume_usd: 1000000
-
-# 日志配置覆盖（策略相关）
-logging:
-  # 生产环境使用INFO级别（记录关键事件）
-  level: "INFO"
-  
-  # 分模式日志级别
-  level_by_mode:
-    active: "INFO"
-    quiet: "INFO"
-  
-  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-  
-  file:
-    filename: "production.log"
-    max_size_mb: 500
-    backup_count: 10
-  
-  console:
-    # 生产环境只输出错误和模式切换事件
+  # 熔断器
+  circuit_breaker:
     enabled: true
-    level: "WARNING"
-
-# 测试配置覆盖
-testing:
-  mode: "e2e"
-  coverage: false
-
-# 数据库配置覆盖
-database:
-  # 生产环境可能使用PostgreSQL
-  enabled: false
-  type: "postgresql"
-  # 实际配置从环境变量读取
-
-# 通知配置覆盖
-notifications:
-  # 生产环境启用通知
-  enabled: true
-  channels:
-    - email
-    - slack
-
-# 安全配置覆盖
-security:
-  encrypt_api_keys: true
-  mask_sensitive_data: true
-  rate_limiting:
+    failure_threshold: 5
+    recovery_timeout_seconds: 60
+  
+  # 降级策略
+  degradation:
     enabled: true
-    max_requests_per_minute: 60
+    fallback_to_simple_mode: true
+    disable_complex_features: true
 
+# ============================================================================
+# 部署配置
+# ============================================================================
+deployment:
+  # 部署模式
+  mode: "canary"  # canary | blue_green | rolling
+  
+  # 健康检查
+  health_check:
+    enabled: true
+    endpoint: "/health"
+    interval_seconds: 10
+    timeout_seconds: 5
+  
+  # 优雅关闭
+  graceful_shutdown:
+    enabled: true
+    timeout_seconds: 30
+    drain_connections: true
+  
+  # 版本管理
+  versioning:
+    enabled: true
+    current_version: "v13.0"
+    rollback_version: "v12.0"
+    auto_rollback_on_failure: true
+
+# ============================================================================
+# 备注
+# ============================================================================
+# 1. 本配置专为背离检测模块灰度上线设计
+# 2. 执行层保持禁用状态，仅提供信号和监控
+# 3. 所有SLO阈值基于测试结果和系统容量设计
+# 4. 支持原子热更新，便于快速回滚
+# 5. 监控和告警配置完整，确保生产环境安全

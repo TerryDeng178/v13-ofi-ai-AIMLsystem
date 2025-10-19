@@ -23,6 +23,236 @@ system:
   created_at: "2025-10-19"
 
 # ============================================================================
+# 背离检测配置
+# ============================================================================
+divergence_detection:
+  # 配置版本
+  version: "v1.0"
+  description: "背离检测参数配置，支持条件覆盖和热更新"
+  
+  # 默认参数
+  default:
+    swing_L: 13
+    z_hi: 1.6
+    z_mid: 0.6
+    cooldown_secs: 30
+    max_lag: 20
+    cons_min: 2
+    min_separation: 6
+    warmup_min: 100
+    weak_threshold: 35.0
+  
+  # 条件覆盖规则
+  overrides:
+    # OFI数据源在清淡时段使用更保守参数
+    - when:
+        source: "OFI_ONLY"
+        liquidity: "quiet"
+      set:
+        z_hi: 1.2
+        z_mid: 0.4
+        cooldown_secs: 60
+    
+    # CVD数据源在活跃时段使用更敏感参数
+    - when:
+        source: "CVD_ONLY"
+        liquidity: "active"
+      set:
+        z_hi: 1.8
+        z_mid: 0.8
+        cooldown_secs: 15
+    
+    # 融合数据源在白天时段使用长周期参数
+    - when:
+        source: "FUSION"
+        session: "day"
+      set:
+        swing_L: 21
+        z_hi: 1.6
+        z_mid: 0.6
+    
+    # 夜间时段所有数据源使用保守参数
+    - when:
+        session: "night"
+      set:
+        z_hi: 1.4
+        z_mid: 0.5
+        cooldown_secs: 45
+    
+    # 高频交易对使用短周期参数
+    - when:
+        symbol: "BTCUSDT"
+      set:
+        swing_L: 8
+        cooldown_secs: 10
+    
+    # 低频交易对使用长周期参数
+    - when:
+        symbol: "ETHUSDT"
+      set:
+        swing_L: 21
+        cooldown_secs: 60
+  
+  # 校准配置
+  calibration:
+    file: "config/calibration/divergence_score_calibration.json"
+    version: "v1.0"
+    description: "分数到期望收益/胜率映射"
+  
+  # 监控配置
+  monitoring:
+    prometheus:
+      port: 8003
+      path: "/metrics"
+      scrape_interval: "5s"
+    
+    grafana:
+      dashboard_uid: "divergence-monitoring"
+      refresh_interval: "5s"
+    
+    alerts:
+      latency_threshold: 0.003  # 3ms
+      event_rate_min: 0.1      # 最小事件率
+      score_median_min: 50     # 最小中位数分数
+  
+  # 热更新配置
+  hot_reload:
+    enabled: true
+    watch_file: true
+    reload_delay: 1.0  # 秒
+    backup_config: true
+    log_changes: true
+  
+  # 实验配置
+  experiments:
+    enabled: false
+    ab_test_ratio: 0.1  # 10%流量用于A/B测试
+    variants:
+      - name: "baseline"
+        params:
+          swing_L: 13
+          z_hi: 1.6
+          z_mid: 0.6
+      - name: "aggressive"
+        params:
+          swing_L: 8
+          z_hi: 1.8
+          z_mid: 0.8
+  
+  # 数据源配置
+  data_sources:
+    ofi:
+      enabled: true
+      weight: 0.4
+      min_samples: 50
+    
+    cvd:
+      enabled: true
+      weight: 0.4
+      min_samples: 50
+    
+    fusion:
+      enabled: true
+      weight: 0.2
+      min_samples: 100
+
+# ============================================================================
+# 融合指标配置
+# ============================================================================
+fusion_metrics:
+  # 配置版本
+  version: "v1.0"
+  description: "OFI+CVD融合指标配置，支持权重、阈值、去噪等参数"
+  
+  # 权重配置
+  weights:
+    w_ofi: 0.6
+    w_cvd: 0.4
+    # 自动归一化：确保权重和为1.0
+  
+  # 信号阈值
+  thresholds:
+    fuse_buy: 1.5
+    fuse_strong_buy: 2.5
+    fuse_sell: -1.5
+    fuse_strong_sell: -2.5
+  
+  # 一致性阈值
+  consistency:
+    min_consistency: 0.3
+    strong_min_consistency: 0.7
+  
+  # 数据处理
+  data_processing:
+    z_clip: 5.0
+    max_lag: 0.300  # 最大时间差(秒)
+    warmup_samples: 30  # 暖启动样本数
+  
+  # 去噪参数
+  denoising:
+    hysteresis_exit: 1.2
+    cooldown_secs: 1.0
+    min_duration: 2  # 最小持续次数（暂未启用）
+  
+  # 性能配置
+  performance:
+    max_events_per_second: 100
+    batch_size: 10
+    queue_size: 1000
+  
+  # 监控配置
+  monitoring:
+    prometheus:
+      port: 8002
+      path: "/metrics"
+      scrape_interval: "5s"
+    
+    grafana:
+      dashboard_uid: "fusion-metrics"
+      refresh_interval: "5s"
+    
+    alerts:
+      consistency_threshold: 0.2  # 一致性告警阈值
+      lag_threshold: 0.5  # 滞后告警阈值
+  
+  # 热更新配置
+  hot_reload:
+    enabled: true
+    watch_file: true
+    reload_delay: 1.0
+    backup_config: true
+    log_changes: true
+  
+  # 实验配置
+  experiments:
+    enabled: false
+    ab_test_ratio: 0.1
+    variants:
+      - name: "conservative"
+        params:
+          fuse_strong_buy: 3.0
+          fuse_strong_sell: -3.0
+      - name: "aggressive"
+        params:
+          fuse_strong_buy: 2.0
+          fuse_strong_sell: -2.0
+  
+  # 日志配置
+  logging:
+    level: "INFO"
+    format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    file: "logs/divergence.log"
+    max_size: "10MB"
+    backup_count: 5
+  
+  # 调试配置
+  debug:
+    enabled: false
+    save_events: true
+    events_file: "debug/divergence_events.json"
+    detailed_logs: false
+
+# ============================================================================
 # 数据源配置
 # ============================================================================
 data_source:
@@ -68,6 +298,35 @@ components:
     
     # 描述
     description: "累积成交量差计算和Z-score标准化"
+    
+    # CVD计算参数
+    z_window: 300
+    ema_alpha: 0.2
+    use_tick_rule: true
+    warmup_min: 5
+    
+    # P1.1 Delta-Z配置
+    z_mode: "level"
+    half_life_trades: 300
+    winsor_limit: 8.0
+    freeze_min: 50
+    stale_threshold_ms: 5000
+    
+    # 空窗后冻结配置
+    soft_freeze_ms: 4000
+    hard_freeze_ms: 5000
+    
+    # Step 1 稳健尺度地板配置
+    scale_mode: "ewma"
+    ewma_fast_hl: 80
+    mad_window_trades: 300
+    mad_scale_factor: 1.4826
+    
+    # Step 1 微调配置
+    scale_fast_weight: 0.30
+    scale_slow_weight: 0.70
+    mad_multiplier: 1.30
+    post_stale_freeze: 2
   
   # OFI (Order Flow Imbalance) 组件
   ofi:
@@ -79,6 +338,12 @@ components:
     
     # 描述
     description: "订单流失衡计算和信号分析"
+    
+    # OFI计算参数
+    levels: 5
+    weights: [0.4, 0.25, 0.2, 0.1, 0.05]
+    z_window: 300
+    ema_alpha: 0.2
   
   # AI 组件
   ai:

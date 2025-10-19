@@ -31,3 +31,21 @@ websocket-client>=1.6.0
 # 配置管理
 pyyaml>=6.0
 
+# 科学计算和统计
+scipy>=1.10.0
+
+# 机器学习（用于单调性验证）
+scikit-learn>=1.3.0
+
+# 数据可视化（用于图表生成）
+matplotlib>=3.7.0
+
+# 文件监控（用于配置热更新）
+watchdog>=3.0.0
+
+# Prometheus指标（用于指标对齐）
+prometheus-client>=0.17.0
+
+# HTTP请求（用于指标检查）
+requests>=2.31.0
+

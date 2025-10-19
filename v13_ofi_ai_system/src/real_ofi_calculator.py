@@ -100,15 +100,19 @@ class RealOFICalculator:
         "ofi_hist", "ema_ofi", "bad_points"
     )
     
-    def __init__(self, symbol: str, cfg: OFIConfig = None):
+    def __init__(self, symbol: str, cfg: OFIConfig = None, config_loader=None):
         """
         初始化OFI计算器
         
         参数:
             symbol: 交易对符号（如"ETHUSDT"）
             cfg: OFI配置对象，默认None使用默认配置
+            config_loader: 配置加载器实例，用于从统一配置系统加载参数
         """
-        if cfg is None:
+        if config_loader:
+            # 从统一配置系统加载参数
+            cfg = self._load_from_config_loader(config_loader, symbol)
+        elif cfg is None:
             cfg = OFIConfig()
             
         self.symbol = (symbol or "").upper()
@@ -143,7 +147,44 @@ class RealOFICalculator:
         # 初始化历史数据
         self.ofi_hist = deque(maxlen=self.z_window)
         self.ema_ofi: Optional[float] = None
-        self.bad_points = 0  # 坏数据点计数器
+        self.bad_points = 0
+    
+    def _load_from_config_loader(self, config_loader, symbol: str) -> OFIConfig:
+        """
+        从统一配置系统加载OFI参数
+        
+        参数:
+            config_loader: 配置加载器实例
+            symbol: 交易对符号
+            
+        返回:
+            OFI配置对象
+        """
+        try:
+            # 获取OFI配置
+            ofi_config = config_loader.get('components.ofi', {})
+            binance_config = config_loader.get('binance', {})
+            
+            # 提取配置参数
+            levels = ofi_config.get('levels', binance_config.get('ofi', {}).get('levels', 5))
+            weights = ofi_config.get('weights', binance_config.get('ofi', {}).get('weights', [0.4, 0.25, 0.2, 0.1, 0.05]))
+            z_window = ofi_config.get('z_window', binance_config.get('ofi', {}).get('window_size', 300))
+            ema_alpha = ofi_config.get('ema_alpha', 0.2)
+            
+            # 创建配置对象
+            return OFIConfig(
+                levels=levels,
+                weights=weights,
+                z_window=z_window,
+                ema_alpha=ema_alpha
+            )
+            
+        except Exception as e:
+            # 如果配置加载失败，使用默认配置并记录警告
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(f"Failed to load OFI config from config_loader: {e}. Using default config.")
+            return OFIConfig()  # 坏数据点计数器
 
     def _pad_snapshot(self, arr: List[Tuple[float, float]]) -> List[List[float]]:
         """
