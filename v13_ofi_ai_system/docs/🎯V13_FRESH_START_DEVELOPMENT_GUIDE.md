@@ -42,16 +42,42 @@
 
 ## 🏗️ **V13 全新开发路线图**
 
-### **阶段0: 准备工作（1天）** 📋
+### **阶段0: 准备工作（1天）** ✅ **已完成**
 
 #### **目标**: 清理旧代码，建立新的开发环境
 
 **任务清单**:
-- [ ] 创建新的项目目录 `v13_ofi_ai_system/`
-- [ ] 保留V12的架构文档和经验总结
-- [ ] 归档V12代码到 `archive/v12/`
-- [ ] 建立新的Git仓库或分支 `v13-fresh-start`
-- [ ] 准备币安API密钥（测试网和主网）
+- ✅ 创建新的项目目录 `v13_ofi_ai_system/`
+- ✅ 保留V12的架构文档和经验总结
+- ✅ 归档V12代码到 `archive/v12/`
+- ✅ 建立新的Git仓库或分支 `v13-fresh-start`
+- ✅ 准备币安API密钥（测试网和主网）
+- ✅ **Task_0.6: 创建统一系统配置文件**
+- ✅ **Task_0.7: 动态模式切换与差异化配置**
+- ✅ **Task_0.8: 创建Grafana监控仪表盘**
+
+**Task_0.6 成果**:
+- ✅ 统一配置系统 (`config/system.yaml`)
+- ✅ 环境特定配置 (`config/environments/`)
+- ✅ 配置加载器 (`src/utils/config_loader.py`)
+- ✅ 环境变量覆盖支持
+- ✅ 配置验证和错误处理
+
+**Task_0.7 成果**:
+- ✅ 动态模式切换机制 (active/quiet模式)
+- ✅ 数字资产市场适配 (24/7、HKT时区)
+- ✅ 原子热更新 (RCU锁保证一致性)
+- ✅ 13个Prometheus指标 + 结构化日志
+- ✅ 6条告警规则 + 18个单元测试
+- ✅ 跨午夜时间窗口支持
+
+**Task_0.8 成果**:
+- ✅ 3个Grafana仪表盘 (策略模式概览、性能监控、告警管理)
+- ✅ 完整的Prometheus指标可视化
+- ✅ 时区配置 (Asia/Hong_Kong)
+- ✅ 变量配置 ($env, $symbol)
+- ✅ 告警规则集成 (4条核心告警)
+- ✅ 完整的监控文档和使用指南
 
 **交付物**:
 ```
@@ -59,12 +85,22 @@ v13_ofi_ai_system/
 ├── README.md                    # 项目说明
 ├── requirements.txt             # 依赖包（从最小开始）
 ├── config/
-│   └── binance_config.yaml     # 币安API配置
-├── src/                        # 源代码（空）
-├── tests/                      # 测试代码（空）
+│   ├── binance_config.yaml     # 币安API配置
+│   ├── system.yaml             # 统一系统配置
+│   └── environments/            # 环境特定配置
+├── src/
+│   └── utils/
+│       ├── config_loader.py    # 配置加载器
+│       └── strategy_mode_manager.py  # 模式管理器
+├── grafana/
+│   ├── dashboards/             # 3个监控仪表盘
+│   ├── alerting_rules/         # 告警规则
+│   └── provisioning/           # 自动配置
+├── tests/                      # 测试代码
 ├── data/                       # 数据存储
 └── docs/
-    └── V13_DEVELOPMENT_GUIDE.md  # 本文档
+    ├── V13_DEVELOPMENT_GUIDE.md  # 本文档
+    └── GRAFANA_DASHBOARD_GUIDE.md  # 监控指南
 ```
 
 ---
