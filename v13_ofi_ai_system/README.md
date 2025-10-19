@@ -1,162 +1,193 @@
-# V13 OFI+AI 量化交易系统
+# V13 OFI+CVD 高频交易策略系统
 
-> **从真实开始，每一步都验证**
+[![CI](https://github.com/your-username/v13-ofi-cvd-framework/workflows/CI/badge.svg)](https://github.com/your-username/v13-ofi-cvd-framework/actions)
+[![Python](https://img.shields.io/badge/python-3.11-blue.svg)](https://python.org)
+[![Docker](https://img.shields.io/badge/docker-compose-blue.svg)](https://docker.com)
+[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-## 🎯 项目简介
+一个专注于**OFI（Order Flow Imbalance）**和**CVD（Cumulative Volume Delta）**信号分析的高频交易策略系统，支持动态模式切换和完整的监控体系。
 
-V13是一个基于Order Flow Imbalance (OFI)的量化交易系统，逐步集成AI模型优化。
+## ✨ 核心特性
 
-**核心原则**:
-- ✅ **真实优先**: 每个功能都用真实币安数据验证
-- ✅ **简单开始**: 先做OFI核心，再扩展AI
-- ✅ **逐步迭代**: 每个阶段都有可见效果
-- ✅ **全局思维**: 所有组件协同工作
+### 🎯 交易信号分析
+- **OFI计算**: 订单流不平衡分析，捕捉市场微观结构变化
+- **CVD计算**: 累积成交量差值计算，识别买卖压力
+- **Z-score标准化**: 统计信号标准化，提高信号质量
+- **动态模式切换**: 根据市场条件自动调整策略参数
+
+### 📊 完整监控系统
+- **Prometheus**: 指标收集和存储
+- **Grafana**: 3个专业仪表盘（Overview/Performance/Alerts）
+- **Alertmanager**: 智能告警通知系统
+- **Loki + Promtail**: 日志聚合和分析
+
+### ⚙️ 智能配置管理
+- **统一配置系统**: `system.yaml` + 环境特定配置
+- **动态参数热更新**: 运行时参数调整，无需重启
+- **多环境支持**: development/testing/production
+- **环境变量覆盖**: 支持`V13__section__key=value`格式
+
+## 🚀 快速开始
+
+### 1. 环境准备
+```bash
+# 克隆项目
+git clone https://github.com/your-username/v13-ofi-cvd-framework.git
+cd v13-ofi-cvd-framework
+
+# 安装依赖
+pip install -r requirements.txt
+
+# 配置环境变量
+copy env.example .env
+# 编辑.env文件设置密码
+```
+
+### 2. 启动完整监控系统
+```bash
+# 一键启动（推荐）
+start_full_monitoring.bat
+
+# 或手动启动
+docker compose up -d
+```
+
+### 3. 启动指标服务器
+```bash
+# 启动模拟指标服务器
+cd grafana
+python simple_metrics_server.py 8000
+```
+
+### 4. 访问服务
+- **Grafana**: http://localhost:3000 (admin/从.env读取密码)
+- **Prometheus**: http://localhost:9090
+- **Alertmanager**: http://localhost:9093
 
 ## 📁 项目结构
 
 ```
 v13_ofi_ai_system/
-├── README.md                    # 项目说明（本文件）
-├── requirements.txt             # Python依赖
-├── config/
-│   └── binance_config.yaml     # 币安API配置
-├── src/                        # 核心源代码
-│   ├── binance_websocket_client.py    # WebSocket数据接入
-│   ├── real_ofi_calculator.py         # 真实OFI计算
-│   ├── binance_testnet_trader.py      # 测试网交易
-│   ├── simple_ofi_strategy.py         # 简单OFI策略
-│   ├── simple_ai_model.py             # 简单AI模型（阶段3）
-│   └── ai_enhanced_ofi_strategy.py    # AI增强策略（阶段3）
-├── tests/                      # 测试代码
-│   └── test_ofi_signal_validity.py    # OFI信号验证
-├── data/                       # 数据存储
-│   ├── ofi_history.csv         # OFI历史数据
-│   └── trades.csv              # 交易记录
-├── examples/                   # 示例代码
-│   └── run_live_trading.py     # 实盘运行示例
-└── docs/                       # 文档
-    └── V13_DEVELOPMENT_GUIDE.md # 开发指导
-
+├── config/                    # 配置管理
+│   ├── system.yaml           # 主配置文件
+│   ├── environments/         # 环境特定配置
+│   └── alerting_rules_strategy.yaml
+├── src/                      # 核心代码
+│   ├── utils/
+│   │   ├── config_loader.py  # 配置加载器
+│   │   └── strategy_mode_manager.py  # 模式管理器
+│   └── ...
+├── grafana/                  # 监控配置
+│   ├── dashboards/          # 3个专业仪表盘
+│   ├── alerting_rules/      # 告警规则
+│   ├── provisioning/        # 自动配置
+│   └── *.yml               # 各服务配置
+├── TASKS/                   # 任务管理
+│   ├── Stage0_准备工作/     # 基础任务
+│   └── Stage1_真实OFI+CVD核心/  # 核心开发任务
+├── docs/                    # 详细文档
+├── tests/                   # 测试套件
+└── docker-compose.yml       # 完整监控栈
 ```
 
-## 🚀 快速开始
+## 📊 监控仪表盘
 
-### 1. 安装依赖
+### 1. Strategy Mode Overview
+- 当前模式状态和切换历史
+- 市场触发因子监控
+- 价差和波动率分析
+- 切换原因分布统计
 
+### 2. Strategy Performance  
+- 参数更新性能（P50/P95/P99）
+- 更新失败统计和趋势
+- 性能直方图分布
+- 模块级失败分析
+
+### 3. Strategy Alerts
+- 告警状态实时监控
+- 心跳健康检查
+- 告警趋势分析
+- 日志历史查看
+
+## 🤖 AI协作支持
+
+本项目专门为AI协作设计，包含：
+
+- **AI协作指南**: `AI_COLLABORATION_GUIDE.md` - 详细的AI协作说明
+- **任务管理**: `TASKS/`目录 - 结构化的任务卡片系统
+- **自动化CI/CD**: GitHub Actions工作流
+- **Issue/PR模板**: 标准化的协作流程
+- **完整文档**: 从快速开始到深度开发
+
+## 🧪 测试验证
+
+### 单元测试
 ```bash
-pip install -r requirements.txt
+python -m unittest tests.test_strategy_mode_manager -v
 ```
 
-### 2. 配置币安API
-
-编辑 `config/binance_config.yaml`:
-```yaml
-binance:
-  testnet:
-    api_key: "YOUR_TESTNET_API_KEY"
-    api_secret: "YOUR_TESTNET_API_SECRET"
-  mainnet:
-    api_key: "YOUR_MAINNET_API_KEY"
-    api_secret: "YOUR_MAINNET_API_SECRET"
-```
-
-### 3. 运行WebSocket数据接收（阶段1.1）
-
+### 系统验证
 ```bash
-python src/binance_websocket_client.py
+python verify_monitoring.py
 ```
 
-### 4. 运行OFI计算（阶段1.2）
-
+### 配置验证
 ```bash
-python src/real_ofi_calculator.py
+python -m py_compile src/utils/config_loader.py
+python -m py_compile src/utils/strategy_mode_manager.py
 ```
 
-## 📊 开发阶段
+## 📈 性能特性
 
-- [x] **阶段0**: 项目准备（已完成）
-- [ ] **阶段1**: 真实OFI核心（3-5天）
-  - [ ] 1.1 币安WebSocket数据接入
-  - [ ] 1.2 真实OFI计算
-  - [ ] 1.3 OFI信号验证
-- [ ] **阶段2**: 简单但真实的交易（2-3天）
-  - [ ] 2.1 币安测试网交易接入
-  - [ ] 2.2 简单OFI交易策略
-  - [ ] 2.3 真实交易测试
-- [ ] **阶段3**: 逐步加入AI（5-7天）
-  - [ ] 3.1 数据收集与特征工程
-  - [ ] 3.2 简单AI模型训练
-  - [ ] 3.3 AI增强交易策略
-- [ ] **阶段4**: 深度学习优化（可选，7-10天）
+- **低延迟**: 优化的数据处理管道
+- **高可用**: 容器化部署，支持水平扩展
+- **实时监控**: 13个关键Prometheus指标
+- **智能告警**: 基于规则的自动告警系统
+- **持久化**: 数据持久化存储，容器重启不丢失
 
-## 🎯 当前目标
+## 🔧 开发指南
 
-**阶段1.1**: 实现币安WebSocket客户端，能实时接收订单簿数据
+### 配置系统
+所有参数通过`config/system.yaml`管理，支持：
+- 环境变量覆盖：`V13__section__key=value`
+- 环境特定配置：`config/environments/*.yaml`
+- 动态热更新：运行时参数调整
 
-**成功指标**:
-- ✅ 能连续接收1小时以上的订单簿数据
-- ✅ 数据完整性 >95%
-- ✅ 延迟 <500ms
+### 动态模式切换
+- **模式类型**: auto/active/quiet
+- **触发条件**: 时间调度 + 市场活动
+- **参数热更新**: 支持运行时参数调整
+- **监控指标**: 13个Prometheus指标
 
-## 📝 开发日志
+## 📚 文档资源
 
-### 2025-01-17
-- ✅ 创建V13项目结构
-- ⏳ 开始阶段1.1: WebSocket数据接入
+- [AI协作指南](AI_COLLABORATION_GUIDE.md) - 详细的AI协作说明
+- [项目文档索引](PROJECT_CORE_DOCUMENTATION_INDEX.md) - 完整文档导航
+- [任务管理](TASKS/README.md) - 任务状态和进度
+- [GitHub上传指南](GITHUB_UPLOAD_GUIDE.md) - 部署到GitHub的详细步骤
 
-## 📚 参考文档
+## 🤝 贡献指南
 
-### 核心系统文档
-- [CVD系统详细文档](docs/CVD_SYSTEM_README.md) - 完整的CVD系统使用指南
-- [CVD快速参考](docs/CVD_QUICK_REFERENCE.md) - 5分钟快速开始指南
-- [监控仪表盘配置](docs/monitoring/dashboard_config.md) - 生产环境监控设置
-- [P1.2优化计划](docs/roadmap/P1.2_optimization_plan.md) - 后续优化路线图
+1. Fork 项目
+2. 创建特性分支 (`git checkout -b feature/AmazingFeature`)
+3. 提交变更 (`git commit -m 'Add some AmazingFeature'`)
+4. 推送到分支 (`git push origin feature/AmazingFeature`)
+5. 创建 Pull Request
 
-### 开发文档
-- [V13开发指导](docs/V13_DEVELOPMENT_GUIDE.md) - 完整的开发路线图
-- [V12经验总结](../🌟V12_TECHNICAL_FRAMEWORK_DEVELOPMENT_PLAN.md) - V12项目的经验教训
+## 📄 许可证
 
-## 🎯 Quality Gates (质量门控)
+本项目采用 MIT 许可证 - 查看 [LICENSE](LICENSE) 文件了解详情。
 
-### 生产环境质量标准
+## 🆘 支持
 
-**硬线指标 (必须达标)**:
-- ✅ **P(|Z|>2) ≤ 8%** - Z-score尾部控制
-- ✅ **median(|Z|) ≤ 1.0** - Z-score中位数控制
-- ✅ **数据完整性 = 100%** - 解析错误=0，队列丢弃率=0%
-- ✅ **数据一致性 = 100%** - 逐笔守恒错误=0
-- ✅ **ID健康 = 100%** - 重复ID=0，倒序ID=0
-
-**优化指标 (持续改进)**:
-- 🎯 **P(|Z|>3) ≤ 2%** - 当前4.65%，目标≤2%
-- 🎯 **P95(|Z|) ≤ 3.0** - 当前2.71，持续优化
-- 🎯 **延迟优化** - 分析模式≤5s，实时模式≤1s
-
-### 配置档位
-
-- **分析模式**: `config/profiles/analysis.env` (WATERMARK_MS=2000)
-- **实时模式**: `config/profiles/realtime.env` (WATERMARK_MS=500)
-
-## ⚠️ 重要原则
-
-**绝对禁止**:
-- ❌ 使用Mock数据（除单元测试）
-- ❌ 构建"假"组件
-- ❌ 跳过真实数据验证
-- ❌ 在没有真实基础前过度优化
-
-**每日检查**:
-- [ ] 今天的代码用了真实数据吗？
-- [ ] 今天的功能经过验证了吗？
-- [ ] 今天的进展能展示效果吗？
-
-## 📞 联系与支持
-
-如有问题，请查看 `docs/V13_DEVELOPMENT_GUIDE.md` 获取详细指导。
+如有问题，请查看：
+- [文档目录](docs/) - 详细技术文档
+- [任务管理](TASKS/) - 当前开发状态
+- [Issue模板](.github/ISSUE_TEMPLATE/) - 报告问题或请求功能
 
 ---
 
-**版本**: V13.0.0  
-**状态**: 开发中  
-**最后更新**: 2025-01-17
-
+**版本**: V1.3  
+**状态**: 生产就绪  
+**最后更新**: 2025-10-19
