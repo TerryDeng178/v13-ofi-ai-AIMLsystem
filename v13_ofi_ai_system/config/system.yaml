@@ -176,6 +176,11 @@ logging:
   # 日志级别: DEBUG | INFO | WARNING | ERROR | CRITICAL
   level: "INFO"
   
+  # 分模式日志级别（策略模式切换时会动态调整）
+  level_by_mode:
+    active: "INFO"
+    quiet: "INFO"
+  
   # 日志格式
   format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
   
@@ -276,6 +281,101 @@ testing:
   coverage: true
 
 # ============================================================================
+# 策略模式与差异化配置（数字资产市场）
+# ============================================================================
+strategy:
+  name: "ofi_cvd"
+  
+  # 模式选择: auto（自动切换）| active（固定活跃）| quiet（固定安静）
+  mode: "auto"
+  
+  # 迟滞与去抖配置
+  hysteresis:
+    window_secs: 60           # 评估窗口长度（秒）
+    min_active_windows: 3     # 连续满足活跃判定的窗口数，才切到 active
+    min_quiet_windows: 6      # 连续不满足+非活跃时段的窗口数，才回到 quiet
+  
+  # 触发器配置
+  triggers:
+    # 时间表触发器
+    schedule:
+      enabled: true
+      timezone: "Asia/Hong_Kong"      # 香港时区 (HKT, UTC+8)
+      wrap_midnight: true              # 支持跨午夜窗口
+      calendar: "CRYPTO"               # 交易日历: CRYPTO (24/7) | HK | CN | US
+      enabled_weekdays: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]  # 数字资产7x24
+      holidays: []                     # 数字资产无节假日
+      active_windows:                  # 活跃时段（HKT）
+        - "09:00-12:00"                # 亚洲早盘高峰
+        - "14:00-17:00"                # 亚洲午后
+        - "21:00-02:00"                # 欧美高峰（跨午夜，最重要）
+        - "06:00-08:00"                # 美洲夜盘尾盘
+    
+    # 市场活跃度触发器（针对数字资产市场优化）
+    market:
+      enabled: true
+      window_secs: 60                  # 滑动窗口长度
+      min_trades_per_min: 500          # 最小成交笔数/分钟（数字资产高频）
+      min_quote_updates_per_sec: 100   # 最小报价更新/秒（订单簿更新频繁）
+      max_spread_bps: 5                # 最大点差（基点，流动性好时点差小）
+      min_volatility_bps: 10           # 最小波动率（基点，数字资产波动性高）
+      min_volume_usd: 1000000          # 最小成交量（美元，确保流动性充足）
+      winsorize_percentile: 95         # 尖峰过滤（P95截断）
+      use_median: true                 # 使用中位数替代平均值（稳健估计）
+  
+  # 分模式参数配置
+  params:
+    # OFI 参数
+    ofi:
+      active:
+        bucket_ms: 50                  # 更短的bucket（数字资产高频）
+        depth_levels: 15               # 更深的订单簿深度
+        watermark_ms: 200              # 更短的水位线（低延迟）
+        freeze_ms: 0
+        min_qty: 0
+      quiet:
+        bucket_ms: 500                 # 更长的bucket（降低噪声）
+        depth_levels: 5                # 浅订单簿（避免虚假信号）
+        watermark_ms: 2000             # 更长的水位线（等待稳定）
+        freeze_ms: 100
+        min_qty: 0
+    
+    # CVD 参数
+    cvd:
+      active:
+        window_ticks: 1000             # 更短的窗口（快速反应）
+        ema_span: 30                   # 更短的EMA（捕捉短期趋势）
+        denoise_sigma: 1.5             # 较小的去噪（保留信号）
+        half_life_trades: 200
+        winsor_limit: 8.0
+        freeze_min: 50
+      quiet:
+        window_ticks: 10000            # 更长的窗口（平滑噪声）
+        ema_span: 300                  # 更长的EMA（过滤假信号）
+        denoise_sigma: 4.0             # 更大的去噪（强过滤）
+        half_life_trades: 500
+        winsor_limit: 6.0
+        freeze_min: 100
+    
+    # 风控参数
+    risk:
+      active:
+        position_limit: 1.5            # 较大的仓位（高流动性支持）
+        order_rate_limit_per_min: 1000 # 更高的下单频率
+      quiet:
+        position_limit: 0.1            # 极小的仓位（避免冲击）
+        order_rate_limit_per_min: 20   # 极低的下单频率
+    
+    # 性能参数
+    performance:
+      active:
+        flush_metrics_interval_ms: 5000
+        print_every: 1000
+      quiet:
+        flush_metrics_interval_ms: 15000
+        print_every: 5000
+
+# ============================================================================
 # 特性开关（Feature Flags）
 # ============================================================================
 features:
@@ -290,6 +390,14 @@ features:
   
   # 是否启用实验性功能
   experimental: false
+  
+  # 策略特性
+  strategy:
+    dynamic_mode_enabled: true         # 启用动态模式切换
+    throttle_in_quiet: true            # 安静期降采样/限速
+    sample_ratio_quiet: 0.3            # 安静期采样比例
+    dry_run: false                     # 干跑模式（仅打印，不切换参数）
+    cli_override_priority: true        # CLI 参数优先级高于文件配置
 
 # ============================================================================
 # 通知配置（未来使用）

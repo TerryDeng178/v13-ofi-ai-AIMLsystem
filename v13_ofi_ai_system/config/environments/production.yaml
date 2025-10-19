@@ -59,6 +59,55 @@ features:
   verbose_logging: false
   profiling: false
   experimental: false
+  
+  # 策略特性（生产环境）
+  strategy:
+    dynamic_mode_enabled: true    # 生产环境启用动态切换
+    throttle_in_quiet: true       # 安静期降采样（节省资源）
+    sample_ratio_quiet: 0.3       # 30%采样
+    dry_run: false                # 生产环境实际应用参数
+    cli_override_priority: true   # 保留CLI覆盖能力（应急用）
+
+# 策略模式配置覆盖（生产环境 - 保守设置）
+strategy:
+  mode: "auto"  # 生产环境使用自动模式
+  
+  # 生产环境使用标准迟滞参数（稳健）
+  hysteresis:
+    window_secs: 60              # 标准60秒
+    min_active_windows: 3        # 标准3个窗口
+    min_quiet_windows: 6         # 标准6个窗口
+  
+  triggers:
+    market:
+      # 生产环境使用标准阈值（数字资产市场）
+      min_trades_per_min: 500
+      min_quote_updates_per_sec: 100
+      max_spread_bps: 5
+      min_volatility_bps: 10
+      min_volume_usd: 1000000
+
+# 日志配置覆盖（策略相关）
+logging:
+  # 生产环境使用INFO级别（记录关键事件）
+  level: "INFO"
+  
+  # 分模式日志级别
+  level_by_mode:
+    active: "INFO"
+    quiet: "INFO"
+  
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  
+  file:
+    filename: "production.log"
+    max_size_mb: 500
+    backup_count: 10
+  
+  console:
+    # 生产环境只输出错误和模式切换事件
+    enabled: true
+    level: "WARNING"
 
 # 测试配置覆盖
 testing:

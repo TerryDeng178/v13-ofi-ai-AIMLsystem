@@ -1,0 +1,80 @@
+groups:
+  - name: strategy_mode_alerts
+    rules:
+      - alert: StrategyModeSwitchingTooFrequently
+        expr: sum(increase(strategy_mode_transitions_total{env="testing"}[1h])) > 10
+        for: 10m
+        labels:
+          severity: warning
+          service: strategy_mode
+          component: mode_switching
+          env: testing
+        annotations:
+          summary: "策略模式切换过于频繁"
+          description: "过去1小时内模式切换超过10次，可能存在配置问题。当前切换次数: {{ $value }}"
+          runbook_url: "https://docs.example.com/strategy-mode-troubleshooting"
+
+      - alert: StrategyModeStuckInQuiet
+        expr: (time() - max(strategy_mode_last_change_timestamp{env="testing"})) > 4*3600 and on() avg(strategy_mode_active{env="testing"}) < 0.5
+        for: 15m
+        labels:
+          severity: warning
+          service: strategy_mode
+          component: mode_switching
+          env: testing
+        annotations:
+          summary: "策略模式长期处于quiet状态"
+          description: "超过4小时未切换且当前为quiet模式。最后切换时间: {{ $value }}秒前"
+          runbook_url: "https://docs.example.com/strategy-mode-troubleshooting"
+
+      - alert: StrategyParamsUpdateFailed
+        expr: increase(strategy_params_update_failures_total{env="testing"}[5m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+          service: strategy_mode
+          component: parameter_update
+          env: testing
+        annotations:
+          summary: "策略参数更新失败"
+          description: "过去5分钟内参数更新失败，请检查模块状态。失败次数: {{ $value }}"
+          runbook_url: "https://docs.example.com/strategy-parameter-troubleshooting"
+
+      - alert: StrategyMetricsHeartbeatMissing
+        expr: absent(strategy_mode_active{env="testing"}) or (time() - max(strategy_mode_last_change_timestamp{env="testing"})) > 120
+        for: 2m
+        labels:
+          severity: critical
+          service: strategy_mode
+          component: metrics_heartbeat
+          env: testing
+        annotations:
+          summary: "策略指标心跳异常"
+          description: "指标缺失或超过2分钟未更新。请检查Prometheus配置和策略服务状态"
+          runbook_url: "https://docs.example.com/strategy-metrics-troubleshooting"
+
+  - name: strategy_performance_alerts
+    rules:
+      - alert: StrategyParamsUpdateSlow
+        expr: histogram_quantile(0.95, sum by(le) (rate(strategy_params_update_duration_ms_bucket{env="testing"}[5m]))) > 100
+        for: 5m
+        labels:
+          severity: warning
+          service: strategy_mode
+          component: performance
+        annotations:
+          summary: "策略参数更新耗时过长"
+          description: "参数更新P95耗时超过100ms，当前耗时: {{ $value }}ms"
+          runbook_url: "https://docs.example.com/strategy-performance-tuning"
+
+      - alert: CryptoMarketUnusuallyActiveAtNight
+        expr: hour(vector(time())) >= 2 and hour(vector(time())) <= 6 and on() avg without(instance,pod,symbol) (strategy_mode_active{env="testing"}) > 0.8
+        for: 10m
+        labels:
+          severity: info
+          service: strategy_mode
+          component: market_analysis
+        annotations:
+          summary: "数字资产市场凌晨异常活跃"
+          description: "凌晨2-6点期间市场异常活跃，当前活跃度: {{ $value }}"
+          runbook_url: "https://docs.example.com/crypto-market-analysis"

@@ -1,0 +1,69 @@
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  - job_name: system
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: varlogs
+          __path__: /var/log/*log
+
+  - job_name: strategy-logs
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: strategy
+          __path__: /var/log/strategy/*.log
+          env: testing
+          service: strategy_mode
+
+  - job_name: docker-logs
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: docker
+          __path__: /var/log/docker/*.log
+
+  - job_name: journal
+    journal:
+      labels:
+        job: systemd-journal
+        env: testing
+    relabel_configs:
+      - source_labels: ['__journal__systemd_unit']
+        target_label: 'unit'
+      - source_labels: ['__journal__boot_id']
+        target_label: 'boot_id'
+      - source_labels: ['__journal__transport']
+        target_label: 'transport'
+      - source_labels: ['__journal_priority_keyword']
+        target_label: 'level'
+      - source_labels: ['__journal__hostname']
+        target_label: 'hostname'
+      - source_labels: ['__journal__exe']
+        target_label: 'exe'
+      - source_labels: ['__journal__cmdline']
+        target_label: 'cmdline'
+      - source_labels: ['__journal__pid']
+        target_label: 'pid'
+      - source_labels: ['__journal__uid']
+        target_label: 'uid'
+      - source_labels: ['__journal__gid']
+        target_label: 'gid'
+      - source_labels: ['__journal__comm']
+        target_label: 'comm'
+      - source_labels: ['__journal__syslog_identifier']
+        target_label: 'syslog_identifier'
+      - source_labels: ['__journal__message']
+        target_label: 'message'

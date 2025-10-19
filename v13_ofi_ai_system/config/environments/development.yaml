@@ -57,6 +57,51 @@ features:
   
   # 开发环境可以启用实验性功能
   experimental: true
+  
+  # 策略特性（开发环境）
+  strategy:
+    dynamic_mode_enabled: true    # 启用动态切换（用于开发调试）
+    throttle_in_quiet: false      # 开发环境不降采样（便于测试）
+    sample_ratio_quiet: 1.0       # 100%采样
+    dry_run: false                # 开发环境实际应用参数
+    cli_override_priority: true   # CLI优先（便于快速测试）
+
+# 策略模式配置覆盖（开发环境）
+strategy:
+  mode: "auto"  # 默认自动模式
+  
+  # 开发环境使用更快的切换（便于测试）
+  hysteresis:
+    window_secs: 30              # 缩短到30秒
+    min_active_windows: 2        # 缩短到2个窗口
+    min_quiet_windows: 3         # 缩短到3个窗口
+  
+  triggers:
+    market:
+      # 开发环境降低阈值（更容易触发，便于测试）
+      min_trades_per_min: 100
+      min_quote_updates_per_sec: 20
+      max_spread_bps: 10
+      min_volatility_bps: 5
+      min_volume_usd: 100000
+
+# 日志配置覆盖（策略相关）
+logging:
+  # 开发环境使用DEBUG级别
+  level: "DEBUG"
+  
+  # 分模式日志级别
+  level_by_mode:
+    active: "DEBUG"
+    quiet: "DEBUG"
+  
+  # 详细的日志格式
+  format: "%(asctime)s - %(name)s - [%(levelname)s] - %(filename)s:%(lineno)d - %(message)s"
+  
+  file:
+    filename: "development.log"
+    max_size_mb: 50
+    backup_count: 3
 
 # 测试配置覆盖
 testing:

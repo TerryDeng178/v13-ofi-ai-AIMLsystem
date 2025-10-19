@@ -1,0 +1,224 @@
+# ============================================================
+# 策略模式切换告警规则（Prometheus AlertManager格式）
+# ============================================================
+# 版本: v1.0
+# 创建日期: 2025-10-19
+# 适用市场: 数字资产（加密货币，24/7）
+
+groups:
+  - name: strategy_mode_alerts
+    interval: 60s
+    rules:
+      # ========================================
+      # 告警1: 切换频繁
+      # ========================================
+      - alert: StrategyModeSwitchingTooFrequently
+        expr: |
+          rate(strategy_mode_transitions_total[1h]) > 10
+        for: 5m
+        labels:
+          severity: warning
+          component: strategy
+          category: stability
+        annotations:
+          summary: "策略模式切换过于频繁"
+          description: |
+            策略模式在过去1小时内切换超过10次（当前速率: {{ $value | humanize }}/小时）。
+            这可能表明：
+            1. 迟滞参数（min_active_windows/min_quiet_windows）设置不当
+            2. 市场指标阈值过于敏感
+            3. 时间表窗口边界抖动
+            建议：
+            - 检查 activity_history，查看抖动模式
+            - 增加 min_active_windows 或 min_quiet_windows
+            - 调整市场指标阈值（如 min_trades_per_min）
+          dashboard: "https://grafana.example.com/d/strategy-mode"
+          runbook: "https://docs.example.com/runbooks/strategy-mode-switching"
+      
+      # ========================================
+      # 告警2: 长期处于安静模式
+      # ========================================
+      - alert: StrategyModeStuckInQuiet
+        expr: |
+          (
+            strategy_mode_active == 0
+            and
+            time() - strategy_mode_last_change_timestamp > 14400
+          )
+        for: 10m
+        labels:
+          severity: warning
+          component: strategy
+          category: performance
+        annotations:
+          summary: "策略长期处于安静模式（超过4小时）"
+          description: |
+            策略已在安静模式停留超过4小时。
+            这可能表明：
+            1. 市场活跃度持续低迷（如凌晨3-6点）
+            2. 时间表触发器未按预期生效
+            3. 市场指标阈值设置过高
+            当前触发器状态：
+            - schedule_active: {{ query "strategy_trigger_schedule_active" | first | value }}
+            - market_active: {{ query "strategy_trigger_market_active" | first | value }}
+            - trades_per_min: {{ query "strategy_trigger_trades_per_min" | first | value }}
+            建议：
+            - 检查当前时段是否在 active_windows 内
+            - 验证市场活跃度是否确实低迷
+            - 考虑降低市场指标阈值（针对数字资产低谷期）
+          dashboard: "https://grafana.example.com/d/strategy-mode"
+      
+      # ========================================
+      # 告警3: 参数更新失败
+      # ========================================
+      - alert: StrategyParamsUpdateFailed
+        expr: |
+          increase(strategy_params_update_failures_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+          component: strategy
+          category: reliability
+        annotations:
+          summary: "策略参数更新失败"
+          description: |
+            策略模式切换时，参数应用失败并回滚。
+            失败模块: {{ $labels.module }}
+            过去5分钟失败次数: {{ $value | humanize }}
+            
+            这是严重问题，表明：
+            1. OFI/CVD/Risk/Performance 模块集成异常
+            2. 参数格式不兼容
+            3. 模块状态不一致
+            
+            立即行动：
+            1. 检查日志中的 "mode_change_failed" 事件
+            2. 查看 failed_modules 字段
+            3. 验证相关模块的健康状态
+            4. 考虑临时禁用动态切换（features.strategy.dynamic_mode_enabled=false）
+          dashboard: "https://grafana.example.com/d/strategy-mode"
+          runbook: "https://docs.example.com/runbooks/strategy-params-update-failed"
+      
+      # ========================================
+      # 告警4: 指标心跳异常
+      # ========================================
+      - alert: StrategyModeMetricsStale
+        expr: |
+          (time() - strategy_mode_last_change_timestamp) > 7200
+          and
+          (
+            rate(strategy_trigger_trades_per_min[5m]) == 0
+            or
+            absent(strategy_trigger_trades_per_min)
+          )
+        for: 5m
+        labels:
+          severity: warning
+          component: strategy
+          category: monitoring
+        annotations:
+          summary: "策略模式指标心跳异常"
+          description: |
+            策略模式管理器的指标超过2小时未更新，或触发因子指标缺失。
+            这可能表明：
+            1. StrategyModeManager 未被调用（update_mode未执行）
+            2. 市场活跃度数据流中断
+            3. 指标收集系统故障
+            
+            建议：
+            - 检查 update_mode() 是否被定期调用
+            - 验证 MarketActivity 数据源是否正常
+            - 检查 Prometheus scrape 配置
+          dashboard: "https://grafana.example.com/d/strategy-mode"
+      
+      # ========================================
+      # 告警5: 参数更新延迟过高
+      # ========================================
+      - alert: StrategyParamsUpdateSlow
+        expr: |
+          histogram_quantile(0.99, 
+            rate(strategy_params_update_duration_ms_bucket{result="success"}[5m])
+          ) > 100
+        for: 10m
+        labels:
+          severity: warning
+          component: strategy
+          category: performance
+        annotations:
+          summary: "策略参数更新延迟过高"
+          description: |
+            参数更新P99延迟超过100ms（当前: {{ $value | humanize }}ms）。
+            这违反了原子热更新的"≤100ms"目标。
+            
+            可能原因：
+            1. params_lock 争用
+            2. 子模块参数应用过慢
+            3. 系统负载过高
+            
+            建议：
+            - 检查 CPU/内存使用情况
+            - 分析 params_lock 持有时间
+            - 优化子模块的 update_params() 实现
+          dashboard: "https://grafana.example.com/d/strategy-mode"
+      
+      # ========================================
+      # 告警6: 凌晨时段异常活跃（数字资产特定）
+      # ========================================
+      - alert: CryptoMarketUnusuallyActiveAtNight
+        expr: |
+          (
+            hour() >= 3 and hour() < 6
+            and
+            strategy_mode_active == 1
+            and
+            strategy_trigger_trades_per_min > 1000
+          )
+        for: 15m
+        labels:
+          severity: info
+          component: strategy
+          category: market
+        annotations:
+          summary: "凌晨时段（03:00-06:00 HKT）市场异常活跃"
+          description: |
+            数字资产市场在通常的低谷时段（03:00-06:00 HKT）表现异常活跃。
+            当前成交笔数: {{ query "strategy_trigger_trades_per_min" | first | value }}/分钟
+            
+            可能原因：
+            1. 重大新闻/事件驱动（监管、协议升级、黑客攻击等）
+            2. 大额清算连锁反应
+            3. 机器人异常行为
+            
+            建议：
+            - 检查新闻源和社交媒体
+            - 验证订单簿深度和流动性
+            - 谨慎参与，可能是高风险时段
+          dashboard: "https://grafana.example.com/d/crypto-market"
+
+# ============================================================
+# 使用说明
+# ============================================================
+# 1. 将此文件部署到 Prometheus AlertManager
+# 2. 配置告警接收器（Email/Slack/Telegram/Webhook）
+# 3. 调整告警阈值以匹配实际业务需求
+# 4. 定期审查告警历史，优化阈值
+#
+# 环境变量覆盖示例：
+#   V13__alerting__strategy_switch_threshold=15  # 切换频繁阈值提高到15次/小时
+#   V13__alerting__quiet_stuck_duration=21600    # 安静模式超时提高到6小时
+#
+# 集成示例（AlertManager config.yml）：
+#   receivers:
+#     - name: 'strategy-team'
+#       slack_configs:
+#         - channel: '#trading-alerts'
+#           text: '{{ .Annotations.summary }}\n{{ .Annotations.description }}'
+#   route:
+#     receiver: 'strategy-team'
+#     group_by: ['alertname', 'severity']
+#     routes:
+#       - match:
+#           component: strategy
+#         receiver: 'strategy-team'
+#         continue: true
+
