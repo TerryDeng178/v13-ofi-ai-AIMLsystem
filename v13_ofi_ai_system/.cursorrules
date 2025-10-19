@@ -1,0 +1,104 @@
+# V13 OFI+CVD 项目 Cursor AI 协作规则
+
+## 项目概述
+这是一个高频交易策略系统，专注于OFI（Order Flow Imbalance）和CVD（Cumulative Volume Delta）信号分析。
+
+## 核心架构
+- **配置系统**: 使用 `config/system.yaml` + 环境特定配置
+- **动态模式切换**: `src/utils/strategy_mode_manager.py`
+- **监控系统**: Prometheus + Grafana + Alertmanager + Loki
+- **任务管理**: `TASKS/` 目录下的Markdown任务卡片
+
+## 开发规范
+
+### 代码风格
+- 使用Python 3.11+
+- 遵循PEP 8规范
+- 所有函数和类必须有文档字符串
+- 使用类型提示（Type Hints）
+
+### 配置管理
+- 所有参数必须通过配置系统管理
+- 支持环境变量覆盖：`V13__section__key=value`
+- 新增配置项需要更新 `config/system.yaml`
+
+### 监控集成
+- 新功能必须添加相应的Prometheus指标
+- 更新Grafana仪表盘配置
+- 添加必要的告警规则
+
+### 测试要求
+- 核心功能必须有单元测试
+- 测试文件放在 `tests/` 目录
+- 使用 `python -m unittest` 运行测试
+
+## 重要文件
+
+### 核心文件
+- `config/system.yaml`: 主配置文件
+- `src/utils/config_loader.py`: 配置加载器
+- `src/utils/strategy_mode_manager.py`: 模式管理器
+- `docker-compose.yml`: 监控栈配置
+
+### 任务管理
+- `TASKS/README.md`: 任务总览
+- `TASKS/Stage*/`: 各阶段任务卡片
+- 任务状态：✅已完成、🔄进行中、⏳待开始
+
+### 监控配置
+- `grafana/dashboards/`: 3个仪表盘JSON
+- `grafana/alerting_rules/`: 告警规则
+- `grafana/provisioning/`: 自动配置
+
+## 协作流程
+
+### 1. 任务选择
+- 查看 `TASKS/` 目录了解当前任务状态
+- 选择未完成的任务进行开发
+- 更新任务状态和进度
+
+### 2. 代码开发
+- 遵循现有代码风格和架构
+- 添加适当的测试和文档
+- 确保配置系统兼容性
+
+### 3. 测试验证
+- 运行单元测试：`python -m unittest tests.test_* -v`
+- 验证配置：`python -m py_compile src/utils/*.py`
+- 检查监控：`python verify_monitoring.py`
+
+### 4. 文档更新
+- 修改功能后更新相关文档
+- 保持README和协作指南同步
+- 更新任务卡片状态
+
+## 环境要求
+- Python 3.11+
+- Docker & Docker Compose
+- Windows 10/11 (当前环境)
+
+## 安全注意事项
+- 生产环境密码不要硬编码
+- 使用环境变量管理敏感信息
+- 定期更新依赖包版本
+
+## 快速命令
+```bash
+# 启动监控系统
+start_full_monitoring.bat
+
+# 运行测试
+python -m unittest tests.test_strategy_mode_manager -v
+
+# 验证系统
+python verify_monitoring.py
+
+# 检查配置
+python -m py_compile src/utils/config_loader.py
+```
+
+## 注意事项
+- 每次修改后立即运行代码检查
+- 保持配置系统的一致性
+- 监控指标必须与Grafana仪表盘同步
+- 任务状态要及时更新
