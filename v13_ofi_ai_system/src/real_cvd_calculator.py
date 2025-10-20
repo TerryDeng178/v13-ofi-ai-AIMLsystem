@@ -103,10 +103,15 @@ class RealCVDCalculator:
         # Step 1 稳健尺度地板状态
         "_ewma_abs_fast", "_alpha_fast", "_mad_buf",
         # Step 1 微调状态
-        "_post_stale_remaining", "_prev_event_time_ms"
+        "_post_stale_remaining", "_prev_event_time_ms",
+        # 新增：上一笔Z与尺度诊断缓存（避免再估计口径错位）
+        "_last_z_raw", "_last_z_post", "_last_is_warmup", "_last_is_flat",
+        "_last_scale_diag"
     )
     
-    def __init__(self, symbol: str, cfg: Optional[CVDConfig] = None, config_loader=None) -> None:
+    def __init__(self, symbol: str, cfg: Optional[CVDConfig] = None, config_loader=None, 
+                 mad_multiplier: Optional[float] = None, scale_fast_weight: Optional[float] = None,
+                 z_hi: Optional[float] = None, z_mid: Optional[float] = None) -> None:
         """
         初始化CVD计算器
         
@@ -114,6 +119,10 @@ class RealCVDCalculator:
             symbol: 交易对符号（如"ETHUSDT"）
             cfg: CVD配置对象，默认None使用默认配置
             config_loader: 配置加载器实例，用于从统一配置系统加载参数
+            mad_multiplier: MAD乘数（Fix Pack v2: 强制参数）
+            scale_fast_weight: 快速权重（Fix Pack v2: 强制参数）
+            z_hi: Z高阈值（Fix Pack v2: 强制参数）
+            z_mid: Z中阈值（Fix Pack v2: 强制参数）
         """
         self.symbol = (symbol or "").upper()
         
@@ -122,6 +131,13 @@ class RealCVDCalculator:
             self.cfg = self._load_from_config_loader(config_loader, symbol)
         else:
             self.cfg = cfg or CVDConfig()
+        
+        # Fix Pack v2: 强制参数覆盖
+        if mad_multiplier is not None:
+            self.cfg.mad_multiplier = mad_multiplier
+        if scale_fast_weight is not None:
+            self.cfg.scale_fast_weight = scale_fast_weight
+        # 提示：CVDConfig 未定义 z_hi/z_mid；如需使用，请在配置类中显式加入或删除这两项。
         self.cvd: float = 0.0
         self.ema_cvd: Optional[float] = None
         self._hist: deque[float] = deque(maxlen=self.cfg.z_window)
@@ -144,6 +160,13 @@ class RealCVDCalculator:
         # Step 1 微调状态初始化
         self._post_stale_remaining: int = 0
         self._prev_event_time_ms: Optional[int] = None
+        
+        # Z缓存与尺度诊断
+        self._last_z_raw: Optional[float] = None
+        self._last_z_post: Optional[float] = None
+        self._last_is_warmup: bool = True
+        self._last_is_flat: bool = False
+        self._last_scale_diag: Dict[str, float] = {}
         
         # 配置验证和诊断日志
         self._print_effective_config()
@@ -273,6 +296,13 @@ class RealCVDCalculator:
         # Step 1 微调状态重置
         self._post_stale_remaining = 0
         self._prev_event_time_ms = None
+        
+        # Z缓存重置
+        self._last_z_raw = None
+        self._last_z_post = None
+        self._last_is_warmup = True
+        self._last_is_flat = False
+        self._last_scale_diag = {}
 
     def get_state(self) -> Dict[str, Any]:
         """
@@ -302,6 +332,15 @@ class RealCVDCalculator:
                 "ewma_abs_delta": self._ewma_abs_delta,
                 "trades_count": self._trades_count,
             },
+        }
+    
+    def get_last_zscores(self) -> Dict[str, Any]:
+        """返回上一笔计算时缓存的 Z（raw=截断前，cvd=截断后）与标志，不再二次估计。"""
+        return {
+            "z_raw": self._last_z_raw,
+            "z_cvd": self._last_z_post,
+            "is_warmup": self._last_is_warmup,
+            "is_flat": self._last_is_flat,
         }
     
     @property
@@ -389,6 +428,11 @@ class RealCVDCalculator:
             # 原有Level-Z模式
             self._hist.append(self.cvd)
             z_val, warmup, std_zero = self._z_last_excl()
+            # level模式下 raw/post 相同
+            self._last_z_raw = z_val
+            self._last_z_post = z_val
+            self._last_is_warmup = bool(warmup)
+            self._last_is_flat = bool(std_zero)
             
         return self._result(z_val, warmup, std_zero, event_time_ms=event_time_ms)
 
@@ -585,8 +629,8 @@ class RealCVDCalculator:
             
             ewma_mix = (w_fast * self._ewma_abs_fast + 
                        w_slow * self._ewma_abs_delta)
-            mad_raw = self._robust_mad_sigma() / self.cfg.mad_scale_factor  # 原始MAD
-            sigma_floor = self.cfg.mad_scale_factor * mad_raw * self.cfg.mad_multiplier
+            # MAD→σ：_robust_mad_sigma() 已含 mad_scale_factor，这里直接乘安全系数
+            sigma_floor = self._robust_mad_sigma() * self.cfg.mad_multiplier
             scale = max(ewma_mix, sigma_floor, 1e-9)
             
             # 诊断日志：检查反相/归一化问题（每300笔记录一次，避免阻塞）
@@ -597,7 +641,7 @@ class RealCVDCalculator:
                 print(f"  w_fast={self.cfg.scale_fast_weight}, w_slow={self.cfg.scale_slow_weight}")
                 print(f"  w_fast+w_slow={self.cfg.scale_fast_weight + self.cfg.scale_slow_weight}")
                 print(f"  ewma_mix={ewma_mix:.6f}")
-                print(f"  mad_raw={mad_raw:.6f}")
+                print(f"  mad_raw={self._robust_mad_sigma() / self.cfg.mad_scale_factor:.6f}")
                 print(f"  sigma_floor={sigma_floor:.6f}")
                 print(f"  scale={scale:.6f}")
                 print(f"  delta={self._last_delta:.6f}")
@@ -641,13 +685,27 @@ class RealCVDCalculator:
             self._post_stale_remaining -= 1
             return None, False, False
             
-        # 计算Delta-Z
-        z = self._last_delta / scale
-        
-        # Winsorize截断
-        z = max(min(z, self.cfg.winsor_limit), -self.cfg.winsor_limit)
-        
-        return z, False, False
+        # 计算ΔZ（raw 在 winsor 之前；post 为截断后）
+        z_raw = self._last_delta / scale
+        z_post = max(min(z_raw, self.cfg.winsor_limit), -self.cfg.winsor_limit)
+        # 缓存"上一笔"结果与尺度诊断
+        self._last_z_raw = z_raw
+        self._last_z_post = z_post
+        self._last_is_warmup = False
+        self._last_is_flat = False
+        self._last_scale_diag = {
+            "ewma_fast": self._ewma_abs_fast,
+            "ewma_slow": self._ewma_abs_delta,
+            "w_fast": self.cfg.scale_fast_weight,
+            "w_slow": self.cfg.scale_slow_weight,
+            "ewma_mix": ( (max(0.0, min(1.0, self.cfg.scale_fast_weight)) /
+                            max(1e-9, (self.cfg.scale_fast_weight + self.cfg.scale_slow_weight))) * self._ewma_abs_fast
+                        + (max(0.0, min(1.0, self.cfg.scale_slow_weight)) /
+                            max(1e-9, (self.cfg.scale_fast_weight + self.cfg.scale_slow_weight))) * self._ewma_abs_delta ),
+            "sigma_floor": self._robust_mad_sigma() * self.cfg.mad_multiplier if self.cfg.scale_mode=="hybrid" else 0.0,
+            "scale": scale,
+        }
+        return z_post, False, False
 
     def _peek_delta_z(self) -> Tuple[bool, bool, Optional[float]]:
         """
@@ -701,7 +759,7 @@ class RealCVDCalculator:
         """
         if self.cfg.z_mode == "delta":
             warmup, std_zero, z_val = self._peek_delta_z()
-            return {
+            base = {
                 "z_mode": "delta",
                 "z_value": z_val,
                 "warmup": warmup,
@@ -714,6 +772,9 @@ class RealCVDCalculator:
                 "freeze_min": self.cfg.freeze_min,
                 "stale_threshold_ms": self.cfg.stale_threshold_ms,
             }
+            # 附加尺度诊断，便于 Quiet 档归因
+            base.update(self._last_scale_diag or {})
+            return base
         else:
             warmup, std_zero, z_val = self._peek_z()
             return {

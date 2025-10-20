@@ -99,21 +99,7 @@ divergence_detection:
     version: "v1.0"
     description: "分数到期望收益/胜率映射"
   
-  # 监控配置
-  monitoring:
-    prometheus:
-      port: 8003
-      path: "/metrics"
-      scrape_interval: "5s"
-    
-    grafana:
-      dashboard_uid: "divergence-monitoring"
-      refresh_interval: "5s"
-    
-    alerts:
-      latency_threshold: 0.003  # 3ms
-      event_rate_min: 0.1      # 最小事件率
-      score_median_min: 50     # 最小中位数分数
+  # 监控配置已移到顶级monitoring部分
   
   # 热更新配置
   hot_reload:
@@ -200,16 +186,7 @@ fusion_metrics:
     batch_size: 10
     queue_size: 1000
   
-  # 监控配置
-  monitoring:
-    prometheus:
-      port: 8002
-      path: "/metrics"
-      scrape_interval: "5s"
-    
-    grafana:
-      dashboard_uid: "fusion-metrics"
-      refresh_interval: "5s"
+  # 监控配置已合并到主monitoring部分
     
     alerts:
       consistency_threshold: 0.2  # 一致性告警阈值
@@ -269,17 +246,70 @@ data_source:
   
   # WebSocket配置
   websocket:
-    # 连接超时（秒）
+    # 币安官方推荐配置
     timeout: 30
-    
-    # 重连间隔（秒）
     reconnect_interval: 5
-    
-    # 最大重连次数（0表示无限重连）
     max_reconnect_attempts: 0
+    ping_interval: 20  # 官方标准：20秒PING间隔
     
-    # Ping间隔（秒）
-    ping_interval: 20
+    # 详细连接配置
+    connection:
+      # 连接超时（秒）
+      timeout: 30
+      # 重连间隔（秒）
+      reconnect_interval: 5
+      # 最大重连次数（0表示无限重连）
+      max_reconnect_attempts: 0
+      # Ping间隔（秒）
+      ping_interval: 20
+      # 心跳超时（秒）- 币安官方要求：1分钟内回复PONG
+      heartbeat_timeout: 60
+      # 指数退避最大间隔（秒）
+      max_backoff_interval: 30
+    
+    # 数据流配置
+    stream:
+      # 深度更新级别
+      depth_levels: 5
+      # 数据更新频率（毫秒）
+      update_frequency: 100
+      # 缓冲区大小
+      buffer_size: 1000
+      # 背压保护阈值
+      backpressure_threshold: 0.8
+    
+    # 日志配置
+    logging:
+      # 日志级别
+      level: "INFO"
+      # 日志轮转间隔（秒）
+      rotate_interval: 60
+      # 最大日志文件大小（字节）
+      max_file_size: 5000000
+      # 保留的日志文件数量
+      backup_count: 7
+      # 是否启用NDJSON格式
+      enable_ndjson: true
+    
+    # 性能监控配置
+    monitoring:
+      # 性能统计输出间隔（秒）
+      stats_interval: 60
+      # 是否启用性能指标
+      enable_metrics: true
+      # 是否输出处理时延统计
+      enable_latency_stats: true
+    
+    # 数据存储配置
+    storage:
+      # 数据存储目录
+      data_dir: "data/order_book"
+      # 日志存储目录
+      log_dir: "logs"
+      # 是否启用数据压缩
+      enable_compression: true
+      # 压缩格式
+      compression_format: "gzip"
 
 # ============================================================================
 # 组件配置
@@ -299,16 +329,19 @@ components:
     # 描述
     description: "累积成交量差计算和Z-score标准化"
     
-    # CVD计算参数
+    # CVD计算参数 - Phase A1优化后参数
     z_window: 300
     ema_alpha: 0.2
     use_tick_rule: true
     warmup_min: 5
     
-    # P1.1 Delta-Z配置
-    z_mode: "level"
-    half_life_trades: 300
-    winsor_limit: 8.0
+    # Phase A1最优参数组合 (2025-10-21)
+    z_mode: "delta"                    # Delta-Z模式
+    scale_mode: "hybrid"               # 混合尺度模式
+    mad_multiplier: 1.8               # MAD乘数 (优化后)
+    scale_fast_weight: 0.20           # 快速权重 (优化后)
+    half_life_trades: 600             # 半衰期 (优化后)
+    winsor_limit: 8.0                 # Winsor截断限制
     freeze_min: 50
     stale_threshold_ms: 5000
     
@@ -505,6 +538,416 @@ monitoring:
       - "cvd_value"
       - "ofi_value"
       - "signal_count"
+  
+  # Prometheus配置
+  prometheus:
+    port: 8003
+    path: "/metrics"
+    scrape_interval: "5s"
+  
+  # 背离检测指标端口
+  divergence_metrics:
+    port: 8004
+    path: "/metrics"
+    env: "testing"
+  
+  # 融合指标端口
+  fusion_metrics:
+    port: 8005
+    path: "/metrics"
+
+# ============================================================================
+# 背离检测配置
+# ============================================================================
+divergence_detection:
+  # 是否启用背离检测
+  enabled: true
+  
+  # 枢轴检测参数
+  pivot_detection:
+    swing_L: 12                # 枢轴检测窗口长度
+    ema_k: 5                   # EMA平滑参数
+  
+  # 强度阈值
+  thresholds:
+    z_hi: 1.5                  # 高强度阈值
+    z_mid: 0.7                 # 中等强度阈值
+  
+  # 去噪参数
+  denoising:
+    min_separation: 6          # 最小枢轴间距
+    cooldown_secs: 1.0         # 冷却时间
+    warmup_min: 100            # 暖启动最小样本数
+    max_lag: 0.300             # 最大滞后时间
+  
+  # 融合参数
+  fusion:
+    use_fusion: true           # 是否使用融合指标
+  
+  # 性能配置
+  performance:
+    max_events_per_second: 100
+    batch_size: 10
+    queue_size: 1000
+  
+  # 监控配置
+  monitoring:
+    prometheus:
+      port: 8004
+      path: "/metrics"
+      scrape_interval: "5s"
+    
+    alerts:
+      enabled: true
+      rules:
+        - name: "divergence_detection_failure"
+          expr: "increase(divergence_events_total[5m]) == 0"
+          for: "10m"
+          severity: "warning"
+          summary: "背离检测模块无事件产生"
+  
+  # 热更新配置
+  hot_reload:
+    enabled: true
+    watch_file: true
+    reload_delay: 1.0
+    backup_config: true
+    log_changes: true
+
+# ============================================================================
+# 策略模式管理器配置
+# ============================================================================
+strategy_mode:
+  # 默认模式
+  default_mode: "auto"  # auto | active | quiet
+  
+  # 迟滞配置
+  hysteresis:
+    window_secs: 60
+    min_active_windows: 3
+    min_quiet_windows: 6
+  
+  # 触发器配置
+  triggers:
+    # 时间表触发器
+    schedule:
+      enabled: true
+      timezone: "Asia/Hong_Kong"
+      calendar: "CRYPTO"
+      enabled_weekdays: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+      holidays: []
+      active_windows:
+        - start: "09:00"
+          end: "16:00"
+          timezone: "Asia/Hong_Kong"
+        - start: "20:00"
+          end: "02:00"
+          timezone: "Asia/Hong_Kong"
+      wrap_midnight: true
+    
+    # 市场触发器
+    market:
+      enabled: true
+      window_secs: 60
+      min_trades_per_min: 500
+      min_quote_updates_per_sec: 100
+      max_spread_bps: 5
+      min_volatility_bps: 10
+      min_volume_usd: 1000000
+      use_median: true
+      winsorize_percentile: 95
+  
+  # 特性开关
+  features:
+    dynamic_mode_enabled: true
+    dry_run: false
+  
+  # 监控配置
+  monitoring:
+    prometheus:
+      port: 8006
+      path: "/metrics"
+      scrape_interval: "5s"
+    
+    alerts:
+      enabled: true
+      rules:
+        - name: "strategy_mode_switching_too_frequently"
+          expr: "sum(increase(strategy_mode_transitions_total[1h])) > 10"
+          for: "10m"
+          severity: "warning"
+          summary: "策略模式切换过于频繁"
+        - name: "strategy_mode_stuck_in_quiet"
+          expr: "(time() - max(strategy_mode_last_change_timestamp)) > 4*3600 and on() avg(strategy_mode_active) < 0.5"
+          for: "15m"
+          severity: "warning"
+          summary: "策略模式长期处于quiet状态"
+  
+  # 热更新配置
+  hot_reload:
+    enabled: true
+    watch_file: true
+    reload_delay: 2.0
+    backup_config: true
+    log_changes: true
+
+# ============================================================================
+# 融合指标收集器配置
+# ============================================================================
+fusion_metrics_collector:
+  # 基础配置
+  enabled: true
+  
+  # 历史记录配置
+  history:
+    max_records: 1000
+    cleanup_interval: 300  # 5分钟清理一次
+  
+  # 收集配置
+  collection:
+    update_interval: 1.0  # 1秒更新一次
+    batch_size: 10
+    enable_warmup: true
+    warmup_samples: 50
+  
+  # 性能配置
+  performance:
+    max_collection_rate: 100  # 每秒最大收集次数
+    memory_limit_mb: 50
+    gc_threshold: 0.8  # 内存使用率超过80%时触发GC
+  
+  # 监控配置
+  monitoring:
+    prometheus:
+      port: 8005
+      path: "/metrics"
+      scrape_interval: "5s"
+    
+    alerts:
+      enabled: true
+      rules:
+        - name: "fusion_metrics_collection_failure"
+          expr: "increase(fusion_metrics_collection_failures_total[5m]) > 0"
+          for: "2m"
+          severity: "warning"
+          summary: "融合指标收集失败"
+        - name: "fusion_metrics_memory_high"
+          expr: "fusion_metrics_memory_usage_bytes / fusion_metrics_memory_limit_bytes > 0.8"
+          for: "5m"
+          severity: "warning"
+          summary: "融合指标内存使用率过高"
+  
+  # 热更新配置
+  hot_reload:
+    enabled: true
+    watch_file: true
+    reload_delay: 1.0
+    backup_config: true
+    log_changes: true
+
+# ============================================================================
+# 交易流处理配置
+# ============================================================================
+trade_stream:
+  # 基础配置
+  enabled: true
+  
+  # 队列配置
+  queue:
+    size: 1024
+    max_size: 2048
+    backpressure_threshold: 0.8
+  
+  # 打印配置
+  logging:
+    print_every: 100  # 每100条打印一次
+    stats_interval: 60.0  # 统计间隔（秒）
+    log_level: "INFO"
+  
+  # WebSocket配置
+  websocket:
+    heartbeat_timeout: 30  # 心跳超时（秒）
+    backoff_max: 15  # 最大退避时间（秒）
+    ping_interval: 20  # Ping间隔（秒）
+    close_timeout: 10  # 关闭超时（秒）
+    reconnect_delay: 1.0  # 重连延迟（秒）
+    max_reconnect_attempts: 10  # 最大重连尝试次数
+  
+  # 性能配置
+  performance:
+    watermark_ms: 1000  # 水印时间（毫秒）
+    batch_size: 10  # 批处理大小
+    max_processing_rate: 1000  # 最大处理速率（条/秒）
+    memory_limit_mb: 100  # 内存限制（MB）
+  
+  # 监控配置
+  monitoring:
+    prometheus:
+      port: 8008
+      path: "/metrics"
+      scrape_interval: "5s"
+    
+    alerts:
+      enabled: true
+      rules:
+        - name: "trade_stream_connection_failure"
+          expr: "increase(trade_stream_connection_failures_total[5m]) > 0"
+          for: "2m"
+          severity: "warning"
+          summary: "交易流连接失败"
+        - name: "trade_stream_queue_high"
+          expr: "trade_stream_queue_size / trade_stream_queue_max_size > 0.8"
+          for: "5m"
+          severity: "warning"
+          summary: "交易流队列使用率过高"
+  
+  # 热更新配置
+  hot_reload:
+    enabled: true
+    watch_file: true
+    reload_delay: 1.0
+    backup_config: true
+    log_changes: true
+  
+  # Grafana配置
+  grafana:
+    # 基础配置
+    dashboard_uid: "divergence-monitoring"
+    refresh_interval: "5s"
+    
+    # 详细配置
+    server:
+      host: "localhost"
+      port: 3000
+      protocol: "http"
+      admin_user: "admin"
+      admin_password: "admin"
+      timeout: 30
+    
+    # 仪表盘配置
+    dashboards:
+      # 策略模式仪表盘
+      strategy_mode:
+        uid: "strategy-mode-overview"
+        title: "Strategy Mode Overview"
+        description: "V1核心面板：策略模式切换监控仪表盘"
+        tags: ["strategy", "mode", "monitoring"]
+        timezone: "Asia/Hong_Kong"
+        refresh: "30s"
+        time_range: "6h"
+        
+      # 性能仪表盘
+      performance:
+        uid: "strategy-performance"
+        title: "Strategy Performance"
+        description: "策略性能监控仪表盘"
+        tags: ["strategy", "performance", "monitoring"]
+        timezone: "Asia/Hong_Kong"
+        refresh: "30s"
+        time_range: "6h"
+        
+      # 告警仪表盘
+      alerts:
+        uid: "strategy-alerts"
+        title: "Strategy Alerts"
+        description: "策略告警监控仪表盘"
+        tags: ["strategy", "alerts", "monitoring"]
+        timezone: "Asia/Hong_Kong"
+        refresh: "30s"
+        time_range: "6h"
+    
+    # 数据源配置
+    datasources:
+      prometheus:
+        name: "Prometheus"
+        type: "prometheus"
+        url: "http://localhost:9090"
+        access: "proxy"
+        is_default: true
+        editable: true
+        
+      loki:
+        name: "Loki"
+        type: "loki"
+        url: "http://localhost:3100"
+        access: "proxy"
+        editable: true
+    
+    # 变量配置
+    variables:
+      env:
+        name: "env"
+        type: "query"
+        query: "label_values(strategy_mode_active, env)"
+        refresh: 1
+        include_all: false
+        multi: false
+        default_value: "testing"
+        
+      symbol:
+        name: "symbol"
+        type: "query"
+        query: "label_values(strategy_mode_active{env=\"$env\"}, symbol)"
+        refresh: 1
+        include_all: true
+        multi: true
+        default_value: ["BTCUSDT"]
+    
+    # 告警配置
+    alerting:
+      enabled: true
+      rules:
+        # 频繁切换告警
+        frequent_switching:
+          alert: "StrategyModeSwitchingTooFrequently"
+          expr: "sum(increase(strategy_mode_transitions_total{env=\"$env\"}[1h])) > 10"
+          for: "10m"
+          severity: "warning"
+          summary: "策略模式切换过于频繁"
+          description: "过去1小时内模式切换超过10次，可能存在配置问题"
+        
+        # 长期quiet模式
+        stuck_quiet:
+          alert: "StrategyModeStuckInQuiet"
+          expr: "(time() - max(strategy_mode_last_change_timestamp{env=\"$env\"})) > 4*3600 and on() avg(strategy_mode_active{env=\"$env\"}) < 0.5"
+          for: "15m"
+          severity: "warning"
+          summary: "策略模式长期处于quiet状态"
+          description: "超过4小时未切换且当前为quiet模式"
+        
+        # 参数更新失败
+        params_update_failed:
+          alert: "StrategyParamsUpdateFailed"
+          expr: "increase(strategy_params_update_failures_total{env=\"$env\"}[5m]) > 0"
+          for: "0m"
+          severity: "critical"
+          summary: "策略参数更新失败"
+          description: "过去5分钟内参数更新失败，请检查模块状态"
+        
+        # 指标心跳异常
+        metrics_heartbeat_missing:
+          alert: "StrategyMetricsHeartbeatMissing"
+          expr: "absent(strategy_mode_active{env=\"$env\"}) or (time() - max(strategy_metrics_last_scrape_timestamp{env=\"$env\"})) > 120"
+          for: "2m"
+          severity: "critical"
+          summary: "策略指标心跳异常"
+          description: "指标缺失或超过2分钟未更新"
+    
+    # 通知渠道配置
+    notifications:
+      slack:
+        enabled: false
+        webhook_url: ""
+        channel: "#alerts"
+        
+      email:
+        enabled: false
+        smtp_host: ""
+        smtp_port: 587
+        smtp_user: ""
+        smtp_password: ""
+        from_address: ""
+        to_addresses: []
 
 # ============================================================================
 # 数据库配置（未来使用）

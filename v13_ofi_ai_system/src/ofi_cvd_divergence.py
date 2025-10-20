@@ -140,19 +140,68 @@ class PivotDetector:
 class DivergenceDetector:
     """背离检测器"""
     
-    def __init__(self, config: DivergenceConfig):
-        self.cfg = config
+    def __init__(self, config: DivergenceConfig = None, config_loader=None):
+        """
+        初始化背离检测器
+        
+        Args:
+            config: 背离检测配置对象，默认None使用默认配置
+            config_loader: 配置加载器实例，用于从统一配置系统加载参数
+        """
+        if config_loader:
+            # 从统一配置系统加载参数
+            self.cfg = self._load_from_config_loader(config_loader)
+        else:
+            self.cfg = config or DivergenceConfig()
+        
         self._reset_state()
         
         # 枢轴检测器
-        self.price_ofi_detector = PivotDetector(config.swing_L)
-        self.price_cvd_detector = PivotDetector(config.swing_L)
-        self.price_fusion_detector = PivotDetector(config.swing_L) if config.use_fusion else None
+        self.price_ofi_detector = PivotDetector(self.cfg.swing_L)
+        self.price_cvd_detector = PivotDetector(self.cfg.swing_L)
+        self.price_fusion_detector = PivotDetector(self.cfg.swing_L) if self.cfg.use_fusion else None
         
         # 状态跟踪
         self._last_event_ts = 0.0
         self._last_event_type = None
         self._sample_count = 0
+    
+    def _load_from_config_loader(self, config_loader) -> DivergenceConfig:
+        """
+        从统一配置系统加载背离检测参数
+        
+        Args:
+            config_loader: 统一配置加载器实例
+            
+        Returns:
+            DivergenceConfig: 背离检测配置对象
+        """
+        try:
+            # 导入背离检测配置加载器
+            from .divergence_config_loader import DivergenceConfigLoader
+            
+            # 创建背离检测配置加载器
+            divergence_config_loader = DivergenceConfigLoader(config_loader)
+            config = divergence_config_loader.load_config()
+            
+            # 创建DivergenceConfig对象
+            return DivergenceConfig(
+                swing_L=config.swing_L,
+                ema_k=config.ema_k,
+                z_hi=config.z_hi,
+                z_mid=config.z_mid,
+                min_separation=config.min_separation,
+                cooldown_secs=config.cooldown_secs,
+                warmup_min=config.warmup_min,
+                max_lag=config.max_lag,
+                use_fusion=config.use_fusion
+            )
+            
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(f"Failed to load divergence detection config from config_loader: {e}. Using default config.")
+            return DivergenceConfig()
         self._last_event_ts_by_type = {}  # 按类型分别跟踪冷却时间
         self._stats = {
             'events_total': 0,

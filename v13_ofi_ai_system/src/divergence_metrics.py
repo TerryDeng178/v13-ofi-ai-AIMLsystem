@@ -196,7 +196,12 @@ class DivergenceMetricsCollector:
 class DivergencePrometheusExporter:
     """背离检测Prometheus导出器"""
     
-    def __init__(self, port: int = 8002, env: str = "testing"):
+    def __init__(self, port: int = 8004, env: str = "testing", config_loader=None):
+        # 从配置加载器获取端口配置
+        if config_loader:
+            port = config_loader.get('monitoring.divergence_metrics.port', port)
+            env = config_loader.get('monitoring.divergence_metrics.env', env)
+        
         self.port = port
         self.env = env
         self.metrics_collector = DivergenceMetricsCollector()

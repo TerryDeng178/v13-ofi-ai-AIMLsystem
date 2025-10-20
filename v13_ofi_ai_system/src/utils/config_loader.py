@@ -226,10 +226,20 @@ class ConfigLoader:
         
         # 设置叶子节点
         leaf = path[-1]
-        if isinstance(node, dict) and leaf in node:
-            converted_value = self._convert_type(raw_value, node[leaf])
-            node[leaf] = converted_value
-            logger.debug(f"Environment override: {'.'.join(path)} = {converted_value}")
+        if isinstance(node, dict):
+            # 尝试精确匹配
+            if leaf in node:
+                converted_value = self._convert_type(raw_value, node[leaf])
+                node[leaf] = converted_value
+                logger.debug(f"Environment override: {'.'.join(path)} = {converted_value}")
+            else:
+                # 尝试大小写不敏感匹配
+                for key in node.keys():
+                    if key.lower() == leaf.lower():
+                        converted_value = self._convert_type(raw_value, node[key])
+                        node[key] = converted_value
+                        logger.debug(f"Environment override: {'.'.join(path)} = {converted_value} (matched {key})")
+                        break
         # else: 叶子键不存在，跳过
     
     def _convert_type(self, value: str, reference: Any) -> Any:

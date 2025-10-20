@@ -259,16 +259,16 @@ def parse_aggtrade_message(text: str) -> Optional[Tuple[float, float, bool, Opti
         return None
 
 # ---- websocket consumer ----
-async def ws_consume(url: str, queue: asyncio.Queue, stop_evt: asyncio.Event, metrics: MonitoringMetrics):
-    heartbeat_timeout = int(os.getenv("HEARTBEAT_TIMEOUT", "60"))
-    backoff_max = int(os.getenv("BACKOFF_MAX", "30"))
+async def ws_consume(url: str, queue: asyncio.Queue, stop_evt: asyncio.Event, metrics: MonitoringMetrics, 
+                     heartbeat_timeout: int = 30, backoff_max: int = 15, ping_interval: int = 20, 
+                     close_timeout: int = 10):
     warn_rl = RateLimiter(max_per_sec=5)
 
     backoff = 1.0
     first_connect = True
     while not stop_evt.is_set():
         try:
-            async with websockets.connect(url, ping_interval=None, close_timeout=5) as ws:
+            async with websockets.connect(url, ping_interval=ping_interval, close_timeout=close_timeout) as ws:
                 log.info("Connected: %s", url)
                 if not first_connect:
                     metrics.reconnect_count += 1
@@ -301,20 +301,149 @@ async def ws_consume(url: str, queue: asyncio.Queue, stop_evt: asyncio.Event, me
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2.0, float(backoff_max))
 
+# ---- Trade Stream Processor Class ----
+class TradeStreamProcessor:
+    """交易流处理器 - 支持统一配置"""
+    
+    def __init__(self, config_loader=None):
+        """
+        初始化交易流处理器
+        
+        Args:
+            config_loader: 配置加载器实例，用于从统一配置系统加载参数
+        """
+        if config_loader:
+            # 从统一配置系统加载参数
+            from trade_stream_config_loader import TradeStreamConfigLoader
+            self.config_loader = TradeStreamConfigLoader(config_loader)
+            self.config = self.config_loader.load_config()
+        else:
+            # 使用默认配置
+            self.config_loader = None
+            self.config = None
+    
+    def get_websocket_config(self):
+        """获取WebSocket配置"""
+        if self.config:
+            return self.config.websocket
+        else:
+            # 默认配置
+            from trade_stream_config_loader import WebSocketConfig
+            return WebSocketConfig()
+    
+    def get_queue_config(self):
+        """获取队列配置"""
+        if self.config:
+            return self.config.queue
+        else:
+            # 默认配置
+            from trade_stream_config_loader import QueueConfig
+            return QueueConfig()
+    
+    def get_logging_config(self):
+        """获取日志配置"""
+        if self.config:
+            return self.config.logging
+        else:
+            # 默认配置
+            from trade_stream_config_loader import LoggingConfig
+            return LoggingConfig()
+    
+    def get_performance_config(self):
+        """获取性能配置"""
+        if self.config:
+            return self.config.performance
+        else:
+            # 默认配置
+            from trade_stream_config_loader import PerformanceConfig
+            return PerformanceConfig()
+    
+    def get_monitoring_config(self):
+        """获取监控配置"""
+        if self.config:
+            return self.config.monitoring
+        else:
+            # 默认配置
+            from trade_stream_config_loader import MonitoringConfig
+            return MonitoringConfig()
+    
+    async def start_stream(self, symbol: str, url: str = None):
+        """
+        启动交易流处理
+        
+        Args:
+            symbol: 交易对符号
+            url: WebSocket URL，默认从环境变量获取
+        """
+        # 获取配置
+        websocket_config = self.get_websocket_config()
+        queue_config = self.get_queue_config()
+        logging_config = self.get_logging_config()
+        
+        # 构建URL
+        if url is None:
+            url = os.getenv(
+                "WS_URL",
+                f"wss://fstream.binancefuture.com/stream?streams={symbol.lower()}@aggTrade",
+            )
+        
+        # 创建队列和事件
+        q: asyncio.Queue = asyncio.Queue(maxsize=queue_config.size)
+        stop_evt = asyncio.Event()
+        metrics = MonitoringMetrics()
+        
+        # 设置信号处理
+        loop = asyncio.get_running_loop()
+        def _set_stop(*_a):
+            if not stop_evt.is_set():
+                stop_evt.set()
+        try:
+            loop.add_signal_handler(signal.SIGINT, _set_stop)
+        except NotImplementedError:
+            pass
+        try:
+            loop.add_signal_handler(signal.SIGTERM, _set_stop)
+        except (NotImplementedError, AttributeError):
+            pass
+        
+        # 启动任务
+        prod = asyncio.create_task(ws_consume(
+            url, q, stop_evt, metrics,
+            heartbeat_timeout=websocket_config.heartbeat_timeout,
+            backoff_max=websocket_config.backoff_max,
+            ping_interval=websocket_config.ping_interval,
+            close_timeout=websocket_config.close_timeout
+        ))
+        cons = asyncio.create_task(processor(
+            symbol, q, stop_evt, metrics,
+            watermark_ms=logging_config.stats_interval * 1000,  # 转换为毫秒
+            print_every=logging_config.print_every,
+            stats_interval=logging_config.stats_interval
+        ))
+        
+        log.info("Starting trade stream for %s | url=%s", symbol, url)
+        try:
+            await stop_evt.wait()
+        except KeyboardInterrupt:
+            _set_stop()
+        finally:
+            prod.cancel(); cons.cancel()
+            await asyncio.gather(prod, cons, return_exceptions=True)
+            log.info("Graceful shutdown. Final metrics: %s", metrics.to_dict())
+
 # ---- processor ----
-async def processor(symbol: str, queue: asyncio.Queue, stop_evt: asyncio.Event, metrics: MonitoringMetrics):
+async def processor(symbol: str, queue: asyncio.Queue, stop_evt: asyncio.Event, metrics: MonitoringMetrics, 
+                   watermark_ms: int = 2000, print_every: int = 100, stats_interval: float = 60.0):
     cfg = CVDConfig()
     calc = RealCVDCalculator(symbol=symbol, cfg=cfg)
 
     # P0-B: 初始化水位线缓冲
-    watermark_ms = int(os.getenv("WATERMARK_MS", "2000"))
     watermark = WatermarkBuffer(watermark_ms=watermark_ms)
     log.info("[P0-B] Watermark buffer initialized: watermark_ms=%d", watermark_ms)
 
     perf = PerfStats()
-    print_every = int(os.getenv("PRINT_EVERY", "100"))  # 每100条打印一次
+    # 使用传入的参数，不再从环境变量读取
     processed = 0
-    stats_interval = 60.0
     last_stats = time.time()
 
     while not stop_evt.is_set():
@@ -374,43 +503,20 @@ async def processor(symbol: str, queue: asyncio.Queue, stop_evt: asyncio.Event, 
     log.info("[P0-B] Flushed %d messages, total processed=%d", len(remaining), processed)
 
 # ---- main ----
-async def main(symbol: Optional[str] = None, url: Optional[str] = None):
+async def main(symbol: Optional[str] = None, url: Optional[str] = None, config_loader=None):
+    """
+    主函数 - 支持统一配置系统
+    
+    Args:
+        symbol: 交易对符号
+        url: WebSocket URL
+        config_loader: 配置加载器实例
+    """
     sym = (symbol or os.getenv("SYMBOL", "ETHUSDT")).upper()
-    url = url or os.getenv(
-        "WS_URL",
-        f"wss://fstream.binancefuture.com/stream?streams={sym.lower()}@aggTrade",
-    )
-
-    queue_size = int(os.getenv("QUEUE_SIZE", "1024"))
-    q: asyncio.Queue = asyncio.Queue(maxsize=queue_size)
-    stop_evt = asyncio.Event()
-    metrics = MonitoringMetrics()
-
-    loop = asyncio.get_running_loop()
-    def _set_stop(*_a):
-        if not stop_evt.is_set():
-            stop_evt.set()
-    try:
-        loop.add_signal_handler(signal.SIGINT, _set_stop)
-    except NotImplementedError:
-        pass
-    try:
-        loop.add_signal_handler(signal.SIGTERM, _set_stop)
-    except (NotImplementedError, AttributeError):
-        pass
-
-    prod = asyncio.create_task(ws_consume(url, q, stop_evt, metrics))
-    cons = asyncio.create_task(processor(sym, q, stop_evt, metrics))
-
-    log.info("Starting trade stream for %s | url=%s", sym, url)
-    try:
-        await stop_evt.wait()
-    except KeyboardInterrupt:
-        _set_stop()
-    finally:
-        prod.cancel(); cons.cancel()
-        await asyncio.gather(prod, cons, return_exceptions=True)
-        log.info("Graceful shutdown. Final metrics: %s", metrics.to_dict())
+    
+    # 使用新的交易流处理器
+    processor = TradeStreamProcessor(config_loader=config_loader)
+    await processor.start_stream(sym, url)
 
 if __name__ == "__main__":
     import argparse

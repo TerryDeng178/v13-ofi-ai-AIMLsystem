@@ -31,10 +31,54 @@ class FusionMetrics:
 class FusionMetricsCollector:
     """融合指标收集器"""
     
-    def __init__(self, fusion: OFI_CVD_Fusion):
+    def __init__(self, fusion: OFI_CVD_Fusion, config_loader=None):
+        """
+        初始化融合指标收集器
+        
+        Args:
+            fusion: OFI+CVD融合器实例
+            config_loader: 配置加载器实例，用于从统一配置系统加载参数
+        """
         self.fusion = fusion
+        
+        if config_loader:
+            # 从统一配置系统加载参数
+            self.config = self._load_from_config_loader(config_loader)
+        else:
+            # 使用默认配置
+            self.config = self._get_default_config()
+        
         self.metrics_history = []
-        self.max_history = 1000  # 保留最近1000条记录
+        self.max_history = self.config.history.max_records
+    
+    def _load_from_config_loader(self, config_loader):
+        """
+        从统一配置系统加载融合指标收集器参数
+        
+        Args:
+            config_loader: 统一配置加载器实例
+            
+        Returns:
+            FusionMetricsCollectorConfig: 融合指标收集器配置对象
+        """
+        try:
+            # 导入融合指标收集器配置加载器
+            from .fusion_metrics_config_loader import FusionMetricsCollectorConfigLoader
+            
+            # 创建融合指标收集器配置加载器
+            fusion_config_loader = FusionMetricsCollectorConfigLoader(config_loader)
+            return fusion_config_loader.load_config()
+            
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(f"Failed to load fusion metrics collector config from config_loader: {e}. Using default config.")
+            return self._get_default_config()
+    
+    def _get_default_config(self):
+        """获取默认配置"""
+        from .fusion_metrics_config_loader import FusionMetricsCollectorConfig
+        return FusionMetricsCollectorConfig()
     
     def collect_metrics(self, z_ofi: float, z_cvd: float, ts: float,
                        price: Optional[float] = None, lag_sec: float = 0.0) -> FusionMetrics:

@@ -1,7 +1,7 @@
 # V13 OFI+CVD+AI Trading System - 生产环境配置
 # 版本: v13.0
-# 创建日期: 2025-10-20
-# 用途: 背离检测模块灰度上线配置
+# 创建日期: 2025-10-21
+# 用途: 基于Phase A1优化参数的生产基线配置
 
 # ============================================================================
 # 系统元信息
@@ -12,7 +12,53 @@ system:
   environment: "production"
   description: "基于订单流失衡(OFI)和累积成交量差(CVD)的AI增强交易系统 - 生产环境"
   author: "V13 Team"
-  created_at: "2025-10-20"
+  created_at: "2025-10-21"
+  
+  # Phase A1优化部署信息
+  deployment:
+    phase: "A1_optimized"
+    parameters_source: "Phase A1实验A1结果"
+    optimization_date: "2025-10-21"
+    performance_target: "P(|Z|>2) ≤ 8%"
+    baseline_parameters:
+      z_mode: "delta"
+      scale_mode: "hybrid"
+      mad_multiplier: 1.8
+      scale_fast_weight: 0.20
+      half_life_trades: 600
+      winsor_limit: 8.0
+
+# ============================================================================
+# CVD组件 - Phase A1优化参数
+# ============================================================================
+components:
+  cvd:
+    # Phase A1最优参数组合
+    z_mode: "delta"                    # Delta-Z模式
+    scale_mode: "hybrid"               # 混合尺度模式
+    mad_multiplier: 1.8               # MAD乘数 (优化后)
+    scale_fast_weight: 0.20           # 快速权重 (优化后)
+    half_life_trades: 600             # 半衰期 (优化后)
+    winsor_limit: 8.0                 # Winsor截断限制
+    
+    # 动态阈值切箱配置
+    regime_split:
+      method: "dynamic_quantile"       # 动态分位数方法
+      quantile: 0.60                   # 60分位数阈值
+      min_samples_per_regime: 1000     # 每档最小样本量
+      
+    # 尺度诊断配置
+    scale_diagnostics:
+      enabled: true
+      track_floor_hit_rate: true
+      track_scale_distribution: true
+      output_interval: 60              # 输出间隔(秒)
+    
+    # 配置指纹校验
+    config_validation:
+      enabled: true
+      strict_mode: true
+      validate_on_startup: true
 
 # ============================================================================
 # 融合指标配置 - 生产环境
@@ -166,6 +212,30 @@ monitoring:
       - "email"
       - "slack"
   
+  # Phase A1回滚阈值配置
+  rollback_thresholds:
+    # CVD核心指标回滚阈值
+    cvd_z_tail_p2:
+      warning: 5.0               # 警告阈值
+      critical: 8.0              # 严重阈值 (超过即触发回滚)
+      rollback_threshold: 10.0   # 回滚阈值
+    cvd_z_tail_p3:
+      warning: 1.0               # 警告阈值
+      critical: 2.5              # 严重阈值
+      rollback_threshold: 5.0    # 回滚阈值
+    cvd_floor_hit_rate:
+      warning: 0.1               # 警告阈值
+      critical: 0.2              # 严重阈值
+      rollback_threshold: 0.3    # 回滚阈值
+    cvd_scale_median:
+      warning: 50                # 警告阈值
+      critical: 20               # 严重阈值
+      rollback_threshold: 10     # 回滚阈值
+    latency_event_ms_p95:
+      warning: 100               # 警告阈值(ms)
+      critical: 200              # 严重阈值(ms)
+      rollback_threshold: 500    # 回滚阈值(ms)
+  
   # SLO配置
   slo:
     # 事件延迟SLO
@@ -309,15 +379,38 @@ deployment:
   # 版本管理
   versioning:
     enabled: true
-    current_version: "v13.0"
-    rollback_version: "v12.0"
+    current_version: "v13.0-a1-optimized"
+    rollback_version: "v13.0-pre-a1"
     auto_rollback_on_failure: true
+  
+  # Phase A1自动回滚机制
+  auto_rollback:
+    enabled: true
+    check_interval: 60              # 检查间隔(秒)
+    consecutive_failures: 3         # 连续失败次数触发回滚
+    rollback_delay: 30              # 回滚延迟(秒)
+    
+    # 回滚触发条件
+    trigger_conditions:
+      - "cvd_z_tail_p2 > 10.0"      # P(|Z|>2)超过10%
+      - "cvd_z_tail_p3 > 5.0"       # P(|Z|>3)超过5%
+      - "cvd_floor_hit_rate > 0.3"  # 地板命中率超过30%
+      - "cvd_scale_median < 10"     # 尺度中位数低于10
+      - "latency_event_ms_p95 > 500" # 延迟P95超过500ms
+    
+    # 回滚后验证
+    post_rollback_validation:
+      enabled: true
+      validation_duration: 300      # 验证时长(秒)
+      success_threshold: 0.8        # 成功率阈值
 
 # ============================================================================
 # 备注
 # ============================================================================
-# 1. 本配置专为背离检测模块灰度上线设计
-# 2. 执行层保持禁用状态，仅提供信号和监控
-# 3. 所有SLO阈值基于测试结果和系统容量设计
-# 4. 支持原子热更新，便于快速回滚
-# 5. 监控和告警配置完整，确保生产环境安全
+# 1. 本配置基于Phase A1优化结果，采用A1参数作为生产基线
+# 2. CVD组件使用delta+hybrid模式，MAD=1.8, FAST=0.20, HL=600
+# 3. 所有回滚阈值基于A1测试结果设定，确保生产环境安全
+# 4. 支持自动回滚机制，连续3次失败即触发回滚
+# 5. 监控和告警配置完整，实时监控关键指标
+# 6. 保留所有组件配置，支持完整系统功能
+# 7. 配置指纹校验确保参数正确应用

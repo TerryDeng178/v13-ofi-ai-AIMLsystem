@@ -283,15 +283,14 @@ def parse_aggtrade_message(text: str) -> Optional[tuple]:
         return None
 
 # ---- websocket consumer ----
-async def ws_consume(url: str, queue: asyncio.Queue, stop_evt: asyncio.Event, metrics: MonitoringMetrics):
-    heartbeat_timeout = 60
-    backoff_max = 30
+async def ws_consume(url: str, queue: asyncio.Queue, stop_evt: asyncio.Event, metrics: MonitoringMetrics, 
+                    heartbeat_timeout: int = 60, backoff_max: int = 30, ping_interval: int = 20, close_timeout: int = 10):
     backoff = 1.0
     first_connect = True
     
     while not stop_evt.is_set():
         try:
-            async with websockets.connect(url, ping_interval=None, close_timeout=5) as ws:
+            async with websockets.connect(url, ping_interval=ping_interval, close_timeout=close_timeout) as ws:
                 log.info("Connected: %s", url)
                 if not first_connect:
                     metrics.reconnect_count += 1
@@ -310,6 +309,12 @@ async def ws_consume(url: str, queue: asyncio.Queue, stop_evt: asyncio.Event, me
                         raise
                     
                     metrics.total_messages += 1
+                    
+                    # 处理PING消息（币安官方要求）
+                    if msg == "ping":
+                        await ws.send("pong")
+                        continue
+                    
                     # 分析模式：阻塞不丢（实时灰度可通过DROP_OLD=true启用丢旧策略）
                     DROP_OLD = os.getenv("DROP_OLD", "false").lower() == "true"
                     if DROP_OLD and queue.full():
@@ -357,8 +362,8 @@ async def processor(
     )
     calc = RealCVDCalculator(symbol=symbol, cfg=cfg)
     
-    # P0-B: 初始化水位线缓冲
-    watermark_ms = int(os.getenv("WATERMARK_MS", "2000"))
+    # P0-B: 初始化水位线缓冲（减少到500ms以提高实时性）
+    watermark_ms = int(os.getenv("WATERMARK_MS", "500"))
     watermark = WatermarkBuffer(watermark_ms=watermark_ms)
     log.info("[P0-B] Watermark buffer initialized: watermark_ms=%d", watermark_ms)
     
@@ -392,8 +397,8 @@ async def processor(
             ret = calc.update_with_trade(price=price_r, qty=qty_r, is_buy=is_buy_r, event_time_ms=event_ms_r)
             processed += 1
             
-            # 计算延迟
-            latency_ms = (time.time() * 1000 - event_ms_r) if event_ms_r else 0.0
+            # 计算延迟（网络延迟 = 接收时间 - 事件时间）
+            latency_ms = (ts_recv * 1000 - event_ms_r) if event_ms_r else 0.0
             
             # 记录数据
             record = CVDRecord(
@@ -438,7 +443,7 @@ async def processor(
                 ret = calc.update_with_trade(price=price_r, qty=qty_r, is_buy=is_buy_r, event_time_ms=event_ms_r)
                 processed += 1
                 
-                latency_ms = (time.time() * 1000 - event_ms_r) if event_ms_r else 0.0
+                latency_ms = (ts_recv * 1000 - event_ms_r) if event_ms_r else 0.0
                 
                 record = CVDRecord(
                     timestamp=time.time(),  # 使用当前时间，不复用旧的ts_recv
@@ -469,8 +474,8 @@ async def processor(
         ret = calc.update_with_trade(price=price_r, qty=qty_r, is_buy=is_buy_r, event_time_ms=event_ms_r)
         processed += 1
         
-        # 计算延迟
-        latency_ms = (time.time() * 1000 - event_ms_r) if event_ms_r else 0.0
+        # 计算延迟（网络延迟 = 接收时间 - 事件时间）
+        latency_ms = (ts_recv * 1000 - event_ms_r) if event_ms_r else 0.0
         
         # 记录数据
         record = CVDRecord(
@@ -535,8 +540,14 @@ async def main():
     except (NotImplementedError, AttributeError):
         pass
     
+    # 币安官方推荐配置（基于官方文档优化）
+    heartbeat_timeout = 60  # 官方要求：1分钟内回复PONG
+    backoff_max = 30
+    ping_interval = 20  # 官方标准：20秒PING间隔
+    close_timeout = 10  # 合理超时时间
+    
     # 启动任务
-    prod = asyncio.create_task(ws_consume(url, q, stop_evt, metrics))
+    prod = asyncio.create_task(ws_consume(url, q, stop_evt, metrics, heartbeat_timeout, backoff_max, ping_interval, close_timeout))
     cons = asyncio.create_task(processor(symbol, q, stop_evt, metrics, records))
     
     start_time = time.time()

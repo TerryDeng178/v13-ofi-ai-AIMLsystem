@@ -17,8 +17,13 @@ from src.fusion_metrics import FusionMetricsCollector
 class FusionPrometheusExporter:
     """融合指标Prometheus暴露器"""
     
-    def __init__(self, collector: FusionMetricsCollector, port: int = 8001):
+    def __init__(self, collector: FusionMetricsCollector, port: int = 8005, config_loader=None):
         self.collector = collector
+        
+        # 从配置加载器获取端口配置
+        if config_loader:
+            port = config_loader.get('monitoring.fusion_metrics.port', port)
+        
         self.port = port
         
         # 定义Prometheus指标
@@ -170,7 +175,8 @@ class FusionPrometheusExporter:
 
 
 def create_fusion_exporter(config: Optional[Dict[str, Any]] = None, 
-                          port: int = 8001) -> FusionPrometheusExporter:
+                          port: int = 8005, 
+                          config_loader=None) -> FusionPrometheusExporter:
     """
     创建融合指标暴露器
     
@@ -184,7 +190,7 @@ def create_fusion_exporter(config: Optional[Dict[str, Any]] = None,
     from src.fusion_metrics import create_fusion_metrics_collector
     
     collector = create_fusion_metrics_collector(config)
-    exporter = FusionPrometheusExporter(collector, port)
+    exporter = FusionPrometheusExporter(collector, port, config_loader)
     
     return exporter
 
@@ -196,7 +202,7 @@ if __name__ == "__main__":
     print("启动OFI+CVD融合Prometheus指标暴露器...")
     
     # 创建暴露器
-    exporter = create_fusion_exporter(port=8001)
+    exporter = create_fusion_exporter(port=8005)
     
     # 启动服务器
     exporter.start_server()

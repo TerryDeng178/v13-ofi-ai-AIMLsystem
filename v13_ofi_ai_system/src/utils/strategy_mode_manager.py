@@ -126,15 +126,25 @@ class StrategyModeManager:
     4. 记录切换事件和指标
     """
     
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: Dict[str, Any] = None, config_loader=None):
         """
         初始化模式管理器
         
         Args:
-            config: 配置字典（包含strategy配置段）
+            config: 配置字典（包含strategy配置段），默认None使用默认配置
+            config_loader: 配置加载器实例，用于从统一配置系统加载参数
         """
-        self.config = config
-        self.strategy_config = config.get('strategy', {})
+        if config_loader:
+            # 从统一配置系统加载参数
+            self.config = self._load_from_config_loader(config_loader)
+            logger.debug(f"Loaded config from config_loader: {self.config}")
+            self.strategy_config = self.config.get('strategy', {}) if self.config else {}
+        else:
+            self.config = config or {}
+            self.strategy_config = self.config.get('strategy', {})
+        
+        logger.debug(f"Final config: {self.config}")
+        logger.debug(f"Final strategy_config: {self.strategy_config}")
         
         # 当前模式
         self.current_mode = StrategyMode.QUIET  # 默认从保守模式开始
@@ -158,7 +168,14 @@ class StrategyModeManager:
         self.calendar = schedule_config.get('calendar', 'CRYPTO')
         self.enabled_weekdays = schedule_config.get('enabled_weekdays', ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'])
         self.holidays = schedule_config.get('holidays', [])
-        self.active_windows = self._parse_time_windows(schedule_config.get('active_windows', []))
+        # 处理时间窗口配置
+        active_windows_raw = schedule_config.get('active_windows', [])
+        if active_windows_raw and isinstance(active_windows_raw[0], dict):
+            # 新格式：字典列表
+            self.active_windows = self._parse_time_windows_dict(active_windows_raw)
+        else:
+            # 旧格式：字符串列表
+            self.active_windows = self._parse_time_windows(active_windows_raw)
         self.wrap_midnight = schedule_config.get('wrap_midnight', True)
         
         # 市场触发器
@@ -192,7 +209,7 @@ class StrategyModeManager:
         self.current_params = None  # 当前生效的参数快照
         
         # 特性开关
-        features = config.get('features', {}).get('strategy', {})
+        features = self.config.get('features', {}).get('strategy', {})
         self.dynamic_mode_enabled = features.get('dynamic_mode_enabled', True)
         self.dry_run = features.get('dry_run', False)
         
@@ -201,6 +218,88 @@ class StrategyModeManager:
         
         logger.info(f"StrategyModeManager initialized: mode={self.mode_setting}, "
                    f"schedule_enabled={self.schedule_enabled}, market_enabled={self.market_enabled}")
+    
+    def _load_from_config_loader(self, config_loader) -> Dict[str, Any]:
+        """
+        从统一配置系统加载策略模式管理器参数
+        
+        Args:
+            config_loader: 统一配置加载器实例
+            
+        Returns:
+            Dict[str, Any]: 策略模式管理器配置字典
+        """
+        try:
+            # 导入策略模式配置加载器
+            from src.strategy_mode_config_loader import StrategyModeConfigLoader
+            
+            # 创建策略模式配置加载器
+            strategy_config_loader = StrategyModeConfigLoader(config_loader)
+            config = strategy_config_loader.load_config()
+            
+            # 转换为原始配置格式
+            return {
+                'strategy': {
+                    'mode': config.default_mode,
+                    'hysteresis': {
+                        'window_secs': config.hysteresis.window_secs,
+                        'min_active_windows': config.hysteresis.min_active_windows,
+                        'min_quiet_windows': config.hysteresis.min_quiet_windows
+                    },
+                    'triggers': {
+                        'schedule': {
+                            'enabled': config.schedule.enabled,
+                            'timezone': config.schedule.timezone,
+                            'calendar': config.schedule.calendar,
+                            'enabled_weekdays': config.schedule.enabled_weekdays,
+                            'holidays': config.schedule.holidays,
+                            'active_windows': [
+                                {
+                                    'start': w.start,
+                                    'end': w.end,
+                                    'timezone': w.timezone
+                                } for w in config.schedule.active_windows
+                            ],
+                            'wrap_midnight': config.schedule.wrap_midnight
+                        },
+                        'market': {
+                            'enabled': config.market.enabled,
+                            'window_secs': config.market.window_secs,
+                            'min_trades_per_min': config.market.min_trades_per_min,
+                            'min_quote_updates_per_sec': config.market.min_quote_updates_per_sec,
+                            'max_spread_bps': config.market.max_spread_bps,
+                            'min_volatility_bps': config.market.min_volatility_bps,
+                            'min_volume_usd': config.market.min_volume_usd,
+                            'use_median': config.market.use_median,
+                            'winsorize_percentile': config.market.winsorize_percentile
+                        }
+                    }
+                },
+                'features': {
+                    'strategy': {
+                        'dynamic_mode_enabled': config.features.dynamic_mode_enabled,
+                        'dry_run': config.features.dry_run
+                    }
+                }
+            }
+            
+        except Exception as e:
+            logger.warning(f"Failed to load strategy mode config from config_loader: {e}. Using default config.")
+            return {
+                'strategy': {
+                    'mode': 'auto',
+                    'hysteresis': {'window_secs': 60, 'min_active_windows': 3, 'min_quiet_windows': 6},
+                    'triggers': {
+                        'schedule': {'enabled': True, 'timezone': 'Asia/Hong_Kong', 'calendar': 'CRYPTO', 
+                                   'enabled_weekdays': ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'], 
+                                   'holidays': [], 'active_windows': [], 'wrap_midnight': True},
+                        'market': {'enabled': True, 'window_secs': 60, 'min_trades_per_min': 500, 
+                                 'min_quote_updates_per_sec': 100, 'max_spread_bps': 5, 'min_volatility_bps': 10, 
+                                 'min_volume_usd': 1000000, 'use_median': True, 'winsorize_percentile': 95}
+                    }
+                },
+                'features': {'strategy': {'dynamic_mode_enabled': True, 'dry_run': False}}
+            }
     
     def _init_metrics(self):
         """初始化Prometheus指标（13个策略相关指标）"""
@@ -263,6 +362,34 @@ class StrategyModeManager:
                 parsed.append((start_mins, end_mins))
             except Exception as e:
                 logger.error(f"Failed to parse time window '{window_str}': {e}")
+        
+        return parsed
+    
+    def _parse_time_windows_dict(self, windows: List[Dict[str, str]]) -> List[Tuple[int, int]]:
+        """
+        解析时间窗口字典
+        
+        Args:
+            windows: [{"start": "09:00", "end": "12:00", "timezone": "Asia/Hong_Kong"}] 格式的列表
+        
+        Returns:
+            [(540, 720), (1260, 120)] 格式的列表（分钟数，支持跨午夜）
+        """
+        parsed = []
+        for window_dict in windows:
+            try:
+                start_str = window_dict.get('start', '09:00')
+                end_str = window_dict.get('end', '16:00')
+                
+                start_h, start_m = map(int, start_str.split(':'))
+                end_h, end_m = map(int, end_str.split(':'))
+                
+                start_mins = start_h * 60 + start_m
+                end_mins = end_h * 60 + end_m
+                
+                parsed.append((start_mins, end_mins))
+            except Exception as e:
+                logger.error(f"Failed to parse time window dict '{window_dict}': {e}")
         
         return parsed
     

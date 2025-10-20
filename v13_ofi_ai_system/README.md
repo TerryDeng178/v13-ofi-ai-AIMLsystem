@@ -23,9 +23,11 @@
 
 ### ⚙️ 智能配置管理
 - **统一配置系统**: `system.yaml` + 环境特定配置
+- **组件配置集成**: 4个核心组件全部支持统一配置
 - **动态参数热更新**: 运行时参数调整，无需重启
 - **多环境支持**: development/testing/production
 - **环境变量覆盖**: 支持`V13__section__key=value`格式
+- **配置验证**: 100%测试覆盖，确保配置正确性
 
 ## 🚀 快速开始
 
@@ -149,10 +151,90 @@ python -m py_compile src/utils/strategy_mode_manager.py
 ## 🔧 开发指南
 
 ### 配置系统
-所有参数通过`config/system.yaml`管理，支持：
-- 环境变量覆盖：`V13__section__key=value`
-- 环境特定配置：`config/environments/*.yaml`
-- 动态热更新：运行时参数调整
+
+#### 🎯 统一配置架构
+所有参数通过`config/system.yaml`统一管理，支持：
+
+**配置层次**:
+```
+system.yaml (基础配置)
+    ↓
+environments/{ENV}.yaml (环境覆盖)
+    ↓
+环境变量 (运行时覆盖)
+```
+
+**优先级**: 环境变量 > 环境配置 > 系统配置
+
+#### 🔧 核心组件配置集成
+
+| 组件 | 配置参数 | 测试状态 | 配置加载器 |
+|------|---------|---------|-----------|
+| **背离检测核心** | 9个参数 | ✅ 100% | `DivergenceConfigLoader` |
+| **策略模式管理器** | 15个参数 | ✅ 100% | `StrategyModeConfigLoader` |
+| **融合指标收集器** | 8个参数 | ✅ 100% | `FusionMetricsConfigLoader` |
+| **交易流处理** | 25个参数 | ✅ 100% | `TradeStreamConfigLoader` |
+| **总计** | **57个参数** | **✅ 100%** | **4个加载器** |
+
+#### 🚀 配置特性
+
+- **环境变量覆盖**: `V13__section__key=value`
+- **环境特定配置**: `config/environments/*.yaml`
+- **动态热更新**: 运行时参数调整
+- **向后兼容性**: 支持默认配置、配置对象、统一配置三种模式
+- **类型安全**: 自动类型转换和验证
+- **配置验证**: 28个测试用例，100%通过率
+
+#### 📝 配置使用示例
+
+**1. 使用统一配置系统**:
+```python
+from src.utils.config_loader import ConfigLoader
+from src.ofi_cvd_divergence import DivergenceDetector
+from src.utils.strategy_mode_manager import StrategyModeManager
+
+# 加载统一配置
+config_loader = ConfigLoader()
+
+# 创建组件实例（自动加载配置）
+detector = DivergenceDetector(config_loader=config_loader)
+strategy_manager = StrategyModeManager(config_loader=config_loader)
+```
+
+**2. 环境变量覆盖**:
+```bash
+# 覆盖背离检测参数
+export V13__DIVERGENCE_DETECTION__PIVOT_DETECTION__SWING_L=15
+export V13__DIVERGENCE_DETECTION__THRESHOLDS__Z_HI=2.0
+
+# 覆盖策略模式参数
+export V13__STRATEGY_MODE__HYSTERESIS__WINDOW_SECS=120
+
+# 覆盖交易流参数
+export V13__TRADE_STREAM__QUEUE__SIZE=2048
+export V13__TRADE_STREAM__WEBSOCKET__HEARTBEAT_TIMEOUT=60
+```
+
+**3. 环境特定配置**:
+```yaml
+# config/environments/prod.yaml
+divergence_detection:
+  pivot_detection:
+    swing_L: 15
+  thresholds:
+    z_hi: 2.0
+
+strategy_mode:
+  triggers:
+    market:
+      min_trades_per_min: 1000
+
+trade_stream:
+  queue:
+    size: 4096
+  performance:
+    watermark_ms: 2000
+```
 
 ### 动态模式切换
 - **模式类型**: auto/active/quiet
@@ -166,6 +248,12 @@ python -m py_compile src/utils/strategy_mode_manager.py
 - [项目文档索引](PROJECT_CORE_DOCUMENTATION_INDEX.md) - 完整文档导航
 - [任务管理](TASKS/README.md) - 任务状态和进度
 - [GitHub上传指南](GITHUB_UPLOAD_GUIDE.md) - 部署到GitHub的详细步骤
+
+### 🔧 配置管理文档
+- [统一配置集成完成报告](UNIFIED_CONFIG_INTEGRATION_COMPLETE.md) - 四阶段配置集成总结
+- [配置测试结果报告](UNIFIED_CONFIG_TEST_RESULTS.md) - 28个测试用例详细结果
+- [配置文件说明](config/README.md) - 配置系统详细使用指南
+- [阶段4交易流配置总结](STAGE4_TRADE_STREAM_CONFIG_SUMMARY.md) - 交易流配置集成详情
 
 ## 🤝 贡献指南
 
@@ -188,6 +276,6 @@ python -m py_compile src/utils/strategy_mode_manager.py
 
 ---
 
-**版本**: V1.3  
-**状态**: 生产就绪  
-**最后更新**: 2025-10-19
+**版本**: V1.4  
+**状态**: 生产就绪（统一配置集成完成）  
+**最后更新**: 2025-10-20
