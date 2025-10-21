@@ -1,0 +1,19 @@
+{
+  "run_tag": "historical_merged_20251022",
+  "timestamp": "2025-10-22T02:52:49.248659",
+  "symbols": [
+    "BTCUSDT",
+    "ETHUSDT"
+  ],
+  "horizons": [
+    60,
+    180,
+    300,
+    900
+  ],
+  "fusion_weights": {
+    "w_ofi": 0.6,
+    "w_cvd": 0.4,
+    "gate": 0.0
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "run_tag": "flipped_signals_20251021",
+  "timestamp": "2025-10-21T17:26:40.991018",
+  "symbols": [
+    "ETHUSDT"
+  ],
+  "horizons": [
+    60,
+    180,
+    300
+  ],
+  "fusion_weights": {
+    "w_ofi": 0.6,
+    "w_cvd": -0.4
+  }
+}

@@ -1,28 +1,29 @@
 # -*- coding: utf-8 -*-
 """
-Real OFI Calculator - Task 1.2.1
-真实OFI计算器（快照模式）
+Real OFI Calculator - Task 1.2.1 (L1 OFI版本)
+真实OFI计算器（快照模式 + L1价跃迁敏感）
 
 功能：
-- 基于订单簿快照计算OFI (Order Flow Imbalance)
-- 5档深度加权计算
+- 基于订单簿快照计算L1 OFI (Order Flow Imbalance)
+- 最优价跃迁冲击 + 5档深度加权计算
 - Z-score标准化（"上一窗口"基线 + std_zero标记）
 - EMA平滑
 - 纯计算，无I/O操作
 
 核心实现要点：
-1. 权重与档位：
+1. L1 OFI（价跃迁敏感）：
+   - 最优档位：检测价格跃迁，计算冲击项
+   - 价上涨：新最优价队列为正冲击，旧队列为负冲击
+   - 价下跌：旧最优价队列为负冲击，新队列为正冲击
+   - 其余档位：标准数量变化 Δbid_qty_k - Δask_qty_k
+
+2. 权重与档位：
    - 默认权重 [0.4, 0.25, 0.2, 0.1, 0.05]
    - 按K档裁剪/填充并归一化，负值截为0，权重和为1
 
-2. 输入清洗：
+3. 输入清洗：
    - _pad_snapshot 保障价格为有限值、数量非负
    - 异常数据计入 bad_points
-
-3. OFI核心计算：
-   - 逐档计算 Δbid_qty_k / Δask_qty_k
-   - comp = w_k * (Δb - Δa)
-   - OFI = Σ comp
 
 4. Z-score（优化版）：
    - 基线="上一窗口"（不包含当前ofi），避免当前值稀释
@@ -38,7 +39,7 @@ Real OFI Calculator - Task 1.2.1
 
 作者: V13 OFI+CVD+AI System
 创建时间: 2025-10-17
-最后优化: 2025-10-17 (Z-score "上一窗口"基线)
+最后优化: 2025-10-21 (L1 OFI价跃迁敏感版本)
 """
 from __future__ import annotations
 from collections import deque
@@ -97,7 +98,10 @@ class RealOFICalculator:
     __slots__ = (
         "symbol", "K", "w", "z_window", "ema_alpha",
         "bids", "asks", "prev_bids", "prev_asks",
-        "ofi_hist", "ema_ofi", "bad_points"
+        "ofi_hist", "ema_ofi", "bad_points",
+        "bid_jump_up_cnt", "bid_jump_down_cnt", "ask_jump_up_cnt", "ask_jump_down_cnt",
+        "bid_jump_up_impact_sum", "bid_jump_down_impact_sum", 
+        "ask_jump_up_impact_sum", "ask_jump_down_impact_sum"
     )
     
     def __init__(self, symbol: str, cfg: OFIConfig = None, config_loader=None):
@@ -148,6 +152,16 @@ class RealOFICalculator:
         self.ofi_hist = deque(maxlen=self.z_window)
         self.ema_ofi: Optional[float] = None
         self.bad_points = 0
+        
+        # L1价跃迁诊断统计
+        self.bid_jump_up_cnt = 0
+        self.bid_jump_down_cnt = 0
+        self.ask_jump_up_cnt = 0
+        self.ask_jump_down_cnt = 0
+        self.bid_jump_up_impact_sum = 0.0
+        self.bid_jump_down_impact_sum = 0.0
+        self.ask_jump_up_impact_sum = 0.0
+        self.ask_jump_down_impact_sum = 0.0
     
     def _load_from_config_loader(self, config_loader, symbol: str) -> OFIConfig:
         """
@@ -313,13 +327,74 @@ class RealOFICalculator:
         self.bids = self._pad_snapshot(bids)
         self.asks = self._pad_snapshot(asks)
 
-        # 计算各档OFI
+        # 计算L1 OFI（最优价跃迁敏感版本）
         k_components = []
         ofi_val = 0.0
+        
+        # L1 OFI: 最优价跃迁冲击 + 其余档位数量变化
         for i in range(self.K):
-            delta_b = self.bids[i][1] - self.prev_bids[i][1]
-            delta_a = self.asks[i][1] - self.prev_asks[i][1]
-            comp = self.w[i] * (delta_b - delta_a)
+            if i == 0:  # 最优档位：处理价跃迁冲击
+                # 检查bid最优价是否变化
+                bid_price_changed = abs(self.bids[i][0] - self.prev_bids[i][0]) > 1e-8
+                ask_price_changed = abs(self.asks[i][0] - self.prev_asks[i][0]) > 1e-8
+                
+                if bid_price_changed or ask_price_changed:
+                    # 价跃迁冲击：新最优价队列为正冲击，旧最优价队列为负冲击
+                    bid_impact = 0.0
+                    ask_impact = 0.0
+                    
+                    if self.bids[i][0] > self.prev_bids[i][0]:  # bid价上涨
+                        self.bid_jump_up_cnt += 1
+                        # 新最优价队列为正冲击
+                        bid_impact = self.bids[i][1]
+                        # 旧最优价队列为负冲击（如果存在）
+                        if self.prev_bids[i][1] > 0:
+                            bid_impact -= self.prev_bids[i][1]
+                        self.bid_jump_up_impact_sum += bid_impact
+                    elif self.bids[i][0] < self.prev_bids[i][0]:  # bid价下跌
+                        self.bid_jump_down_cnt += 1
+                        # 旧最优价队列为负冲击
+                        bid_impact = -self.prev_bids[i][1]
+                        # 新最优价队列为正冲击
+                        if self.bids[i][1] > 0:
+                            bid_impact += self.bids[i][1]
+                        self.bid_jump_down_impact_sum += bid_impact
+                    else:  # 价格不变，用数量变化
+                        bid_impact = self.bids[i][1] - self.prev_bids[i][1]
+                    
+                    # ask端对称处理（负号）
+                    if self.asks[i][0] > self.prev_asks[i][0]:  # ask价上涨
+                        self.ask_jump_up_cnt += 1
+                        # 旧最优价队列为负冲击
+                        ask_impact = -self.prev_asks[i][1]
+                        # 新最优价队列为正冲击
+                        if self.asks[i][1] > 0:
+                            ask_impact += self.asks[i][1]
+                        self.ask_jump_up_impact_sum += ask_impact
+                    elif self.asks[i][0] < self.prev_asks[i][0]:  # ask价下跌
+                        self.ask_jump_down_cnt += 1
+                        # 新最优价队列为正冲击
+                        ask_impact = self.asks[i][1]
+                        # 旧最优价队列为负冲击（如果存在）
+                        if self.prev_asks[i][1] > 0:
+                            ask_impact -= self.prev_asks[i][1]
+                        self.ask_jump_down_impact_sum += ask_impact
+                    else:  # 价格不变，用数量变化
+                        ask_impact = self.asks[i][1] - self.prev_asks[i][1]
+                    
+                    # L1冲击：bid为正，ask为负
+                    comp = self.w[i] * (bid_impact - ask_impact)
+                else:
+                    # 价格不变，用标准数量变化
+                    delta_b = self.bids[i][1] - self.prev_bids[i][1]
+                    delta_a = self.asks[i][1] - self.prev_asks[i][1]
+                    comp = self.w[i] * (delta_b - delta_a)
+            else:
+                # 其余档位：标准数量变化
+                delta_b = self.bids[i][1] - self.prev_bids[i][1]
+                delta_a = self.asks[i][1] - self.prev_asks[i][1]
+                comp = self.w[i] * (delta_b - delta_a)
+            
             k_components.append(comp)
             ofi_val += comp
 
@@ -364,6 +439,15 @@ class RealOFICalculator:
                 "bad_points": self.bad_points,
                 "warmup": warmup,
                 "std_zero": std_zero,  # 新增：标准差为0标记
+                # L1价跃迁诊断统计
+                "bid_jump_up_cnt": self.bid_jump_up_cnt,
+                "bid_jump_down_cnt": self.bid_jump_down_cnt,
+                "ask_jump_up_cnt": self.ask_jump_up_cnt,
+                "ask_jump_down_cnt": self.ask_jump_down_cnt,
+                "bid_jump_up_impact_sum": self.bid_jump_up_impact_sum,
+                "bid_jump_down_impact_sum": self.bid_jump_down_impact_sum,
+                "ask_jump_up_impact_sum": self.ask_jump_up_impact_sum,
+                "ask_jump_down_impact_sum": self.ask_jump_down_impact_sum,
             },
         }
 

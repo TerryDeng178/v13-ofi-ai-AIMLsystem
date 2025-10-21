@@ -1,0 +1,16 @@
+{
+  "run_tag": "param_tuning_hl300_mad2.2_w4_fw0.1",
+  "timestamp": "2025-10-21T19:36:00.797355",
+  "symbols": [
+    "ETHUSDT"
+  ],
+  "horizons": [
+    60,
+    180,
+    300
+  ],
+  "fusion_weights": {
+    "w_ofi": 0.5,
+    "w_cvd": 0.5
+  }
+}

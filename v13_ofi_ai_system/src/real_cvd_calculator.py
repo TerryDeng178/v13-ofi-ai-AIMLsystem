@@ -48,6 +48,8 @@ class CVDConfig:
     ema_alpha: float = 0.2        # EMA平滑系数
     use_tick_rule: bool = True    # 无 is_buy 时回退到 Tick Rule
     warmup_min: int = 5           # 冷启动阈值下限
+    auto_flip_enabled: bool = False  # 是否启用自动翻转
+    auto_flip_threshold: float = 0.04  # AUC提升阈值，超过此值自动翻转
     
     # P1.1 Delta-Z配置
     z_mode: str = "level"         # Z-score模式: "level"(旧版) | "delta"(新版)
@@ -106,7 +108,13 @@ class RealCVDCalculator:
         "_post_stale_remaining", "_prev_event_time_ms",
         # 新增：上一笔Z与尺度诊断缓存（避免再估计口径错位）
         "_last_z_raw", "_last_z_post", "_last_is_warmup", "_last_is_flat",
-        "_last_scale_diag"
+        "_last_scale_diag",
+        # P0 时间衰减EWMA配置
+        "_tau_fast_sec", "_tau_slow_sec", "_last_event_ts",
+        # P1 活动度自适应配置
+        "_recv_rate_window", "_r_ref", "_gamma", "_beta",
+        # 自动翻转状态
+        "_is_flipped", "_flip_reason", "_tick_rule_count"
     )
     
     def __init__(self, symbol: str, cfg: Optional[CVDConfig] = None, config_loader=None, 
@@ -157,6 +165,18 @@ class RealCVDCalculator:
         self._alpha_fast: float = 1 - math.exp(math.log(0.5) / max(1, self.cfg.ewma_fast_hl))
         self._mad_buf: deque[float] = deque(maxlen=self.cfg.mad_window_trades)
         
+        # P0 时间衰减EWMA配置
+        self._tau_fast_sec: float = 60.0    # 快速EWMA时间半衰期：1分钟
+        self._tau_slow_sec: float = 600.0   # 慢速EWMA时间半衰期：10分钟
+        self._last_event_ts: Optional[float] = None  # 上一笔事件时间戳（秒）
+        
+        # P1 活动度自适应配置
+        # 用时间窗口维护TPS（按秒）——不限制个数，按时间裁剪
+        self._recv_rate_window: deque[float] = deque()  # 存事件秒级时间戳
+        self._r_ref: float = 1.5  # 基准活动度（tps）
+        self._gamma: float = 0.7  # 地板抬升系数
+        self._beta: float = 1.0   # 权重削弱系数
+        
         # Step 1 微调状态初始化
         self._post_stale_remaining: int = 0
         self._prev_event_time_ms: Optional[int] = None
@@ -167,6 +187,11 @@ class RealCVDCalculator:
         self._last_is_warmup: bool = True
         self._last_is_flat: bool = False
         self._last_scale_diag: Dict[str, float] = {}
+        
+        # 自动翻转状态
+        self._is_flipped: bool = False  # 当前是否已翻转
+        self._flip_reason: Optional[str] = None  # 翻转原因
+        self._tick_rule_count: int = 0  # tick-rule传播计数
         
         # 配置验证和诊断日志
         self._print_effective_config()
@@ -293,6 +318,12 @@ class RealCVDCalculator:
         self._ewma_abs_fast = 0.0
         self._mad_buf.clear()
         
+        # P0 时间衰减EWMA重置
+        self._last_event_ts = None
+        
+        # P1 活动度自适应重置
+        self._recv_rate_window.clear()
+        
         # Step 1 微调状态重置
         self._post_stale_remaining = 0
         self._prev_event_time_ms = None
@@ -331,8 +362,30 @@ class RealCVDCalculator:
                 "delta": self._last_delta,
                 "ewma_abs_delta": self._ewma_abs_delta,
                 "trades_count": self._trades_count,
+                "is_flipped": self._is_flipped,
+                "flip_reason": self._flip_reason,
             },
         }
+    
+    def set_flip_state(self, is_flipped: bool, reason: Optional[str] = None) -> None:
+        """
+        设置翻转状态
+        
+        参数:
+            is_flipped: 是否已翻转
+            reason: 翻转原因
+        """
+        self._is_flipped = is_flipped
+        self._flip_reason = reason
+    
+    def get_flip_state(self) -> Tuple[bool, Optional[str]]:
+        """
+        获取翻转状态
+        
+        返回:
+            Tuple[bool, Optional[str]]: (是否已翻转, 翻转原因)
+        """
+        return self._is_flipped, self._flip_reason
     
     def get_last_zscores(self) -> Dict[str, Any]:
         """返回上一笔计算时缓存的 Z（raw=截断前，cvd=截断后）与标志，不再二次估计。"""
@@ -390,8 +443,30 @@ class RealCVDCalculator:
                     side = True  # 买入
                 elif price < self._last_price:
                     side = False  # 卖出
-                else:  # price == last_price，沿用上一笔方向
-                    side = self._last_side
+                else:  # price == last_price，限制tick-rule回退传播
+                    # 检查是否超过传播限制
+                    if hasattr(self, '_tick_rule_count'):
+                        self._tick_rule_count += 1
+                    else:
+                        self._tick_rule_count = 1
+                    
+                    # 限制传播长度：最多连续5笔或超过2秒
+                    max_consecutive = 5
+                    max_time_ms = 2000
+                    
+                    time_exceeded = False
+                    if event_time_ms is not None and self._last_event_time_ms is not None:
+                        time_exceeded = (event_time_ms - self._last_event_time_ms) > max_time_ms
+                    
+                    if self._tick_rule_count <= max_consecutive and not time_exceeded:
+                        side = self._last_side  # 沿用上一笔方向
+                    else:
+                        side = None  # 超过限制，不累计
+                        self._tick_rule_count = 0  # 重置计数
+            else:
+                # 价格变化，重置tick-rule计数
+                if hasattr(self, '_tick_rule_count'):
+                    self._tick_rule_count = 0
         
         if side is None:
             self.bad_points += 1
@@ -599,17 +674,46 @@ class RealCVDCalculator:
         if self._last_delta is None:
             return None, True, False
             
-        # 更新EWMA(|Δ|)稳健尺度
+        # P0 时间衰减EWMA更新
         abs_delta = abs(self._last_delta)
+        current_event_ts = self._last_event_time_ms / 1000.0 if self._last_event_time_ms else None
+        
         if self._trades_count == 1:
+            # 第一笔交易，直接初始化
             self._ewma_abs_delta = abs_delta
             self._ewma_abs_fast = abs_delta
+            if current_event_ts:
+                self._last_event_ts = current_event_ts
         else:
-            self._ewma_abs_delta = self._alpha * abs_delta + (1 - self._alpha) * self._ewma_abs_delta
-            self._ewma_abs_fast = self._alpha_fast * abs_delta + (1 - self._alpha_fast) * self._ewma_abs_fast
+            # 计算时间差（秒）
+            if current_event_ts and self._last_event_ts:
+                dt = current_event_ts - self._last_event_ts
+                dt = max(0.001, dt)  # 最小1ms，避免除零
+                
+                # 时间衰减alpha计算
+                alpha_fast_time = 1.0 - math.exp(-math.log(2) * dt / self._tau_fast_sec)
+                alpha_slow_time = 1.0 - math.exp(-math.log(2) * dt / self._tau_slow_sec)
+                
+                # 时间衰减EWMA更新
+                self._ewma_abs_fast = (1 - alpha_fast_time) * self._ewma_abs_fast + alpha_fast_time * abs_delta
+                self._ewma_abs_delta = (1 - alpha_slow_time) * self._ewma_abs_delta + alpha_slow_time * abs_delta
+                
+                # 更新事件时间戳
+                self._last_event_ts = current_event_ts
+            else:
+                # 回退到按笔更新（兼容性）
+                self._ewma_abs_delta = self._alpha * abs_delta + (1 - self._alpha) * self._ewma_abs_delta
+                self._ewma_abs_fast = self._alpha_fast * abs_delta + (1 - self._alpha_fast) * self._ewma_abs_fast
         
         # 更新MAD缓冲区
         self._mad_buf.append(self._last_delta)
+        
+        # P1 活动度自适应：更新"最近60秒"的时间窗口并计算TPS
+        if current_event_ts is not None:
+            self._recv_rate_window.append(current_event_ts)
+            # 裁剪掉60秒以外的时间戳
+            while self._recv_rate_window and (current_event_ts - self._recv_rate_window[0]) > 60.0:
+                self._recv_rate_window.popleft()
         
         # 暖启动检查
         if self._trades_count < self.cfg.freeze_min:
@@ -627,10 +731,31 @@ class RealCVDCalculator:
             else:
                 w_fast, w_slow = w_fast / w_sum, w_slow / w_sum
             
-            ewma_mix = (w_fast * self._ewma_abs_fast + 
-                       w_slow * self._ewma_abs_delta)
+            # P1 活动度自适应：计算当前tps和自适应参数
+            # 用固定60秒窗口估计TPS（更稳）
+            current_tps = 0.0
+            window_span = 0.0
+            if len(self._recv_rate_window) >= 2:
+                window_span = self._recv_rate_window[-1] - self._recv_rate_window[0]
+                current_tps = len(self._recv_rate_window) / max(60.0, window_span)
+            
+            # P1 活动度自适应权重削弱
+            w_fast_eff = w_fast * min(1.0, (current_tps / self._r_ref) ** self._beta)
+            w_slow_eff = 1.0 - w_fast_eff
+            
+            ewma_mix = (w_fast_eff * self._ewma_abs_fast + 
+                       w_slow_eff * self._ewma_abs_delta)
+            
             # MAD→σ：_robust_mad_sigma() 已含 mad_scale_factor，这里直接乘安全系数
-            sigma_floor = self._robust_mad_sigma() * self.cfg.mad_multiplier
+            sigma_floor_base = self._robust_mad_sigma() * self.cfg.mad_multiplier
+            
+            # P1 活动度自适应地板抬升
+            boost = max(1.0, (self._r_ref / max(current_tps, 0.2)) ** self._gamma)
+            sigma_floor = sigma_floor_base * boost
+            
+            # P0 修正floor_hit_rate统计口径（避免浮点比较误差）
+            floor_used = (sigma_floor >= ewma_mix * (1 - 1e-6))  # 允许微小数值误差
+            
             scale = max(ewma_mix, sigma_floor, 1e-9)
             
             # 诊断日志：检查反相/归一化问题（每300笔记录一次，避免阻塞）
@@ -698,19 +823,22 @@ class RealCVDCalculator:
             "ewma_slow": self._ewma_abs_delta,
             "w_fast": self.cfg.scale_fast_weight,
             "w_slow": self.cfg.scale_slow_weight,
-            "ewma_mix": ( (max(0.0, min(1.0, self.cfg.scale_fast_weight)) /
-                            max(1e-9, (self.cfg.scale_fast_weight + self.cfg.scale_slow_weight))) * self._ewma_abs_fast
-                        + (max(0.0, min(1.0, self.cfg.scale_slow_weight)) /
-                            max(1e-9, (self.cfg.scale_fast_weight + self.cfg.scale_slow_weight))) * self._ewma_abs_delta ),
-            "sigma_floor": self._robust_mad_sigma() * self.cfg.mad_multiplier if self.cfg.scale_mode=="hybrid" else 0.0,
+            "w_fast_eff": w_fast_eff if 'w_fast_eff' in locals() else self.cfg.scale_fast_weight,
+            "w_slow_eff": w_slow_eff if 'w_slow_eff' in locals() else self.cfg.scale_slow_weight,
+            # 记录真实使用的 ewma_mix
+            "ewma_mix": ewma_mix,
+            "sigma_floor_base": self._robust_mad_sigma() * self.cfg.mad_multiplier if self.cfg.scale_mode=="hybrid" else 0.0,
+            "sigma_floor": sigma_floor if 'sigma_floor' in locals() else self._robust_mad_sigma() * self.cfg.mad_multiplier,
+            "boost": boost if 'boost' in locals() else 1.0,
+            "current_tps": current_tps if 'current_tps' in locals() else 0.0,
+            "window_span_sec": window_span if 'window_span' in locals() else 0.0,
             "scale": scale,
+            "floor_used": floor_used if 'floor_used' in locals() else False,  # P0 修正floor命中率统计
         }
         return z_post, False, False
 
     def _peek_delta_z(self) -> Tuple[bool, bool, Optional[float]]:
-        """
-        只读当前Delta-Z的估计（不改变状态），用于get_state
-        """
+        """只读当前 Delta-Z 的估计（不改变状态），口径与 _z_delta 保持一致。"""
         if self._last_delta is None:
             return True, False, None
             
@@ -718,24 +846,32 @@ class RealCVDCalculator:
         if self._trades_count < self.cfg.freeze_min:
             return True, False, None
             
-        # 计算稳健尺度
+        # 计算稳健尺度（与 _z_delta 同口径：时间衰减 + 活动度自适应）
         if self.cfg.scale_mode == "hybrid":
-            # 混合尺度：双EWMA + MAD地板（Step 1微调）
-            # 权重归一化：防止配置错误
+            # 权重归一化
             w_fast = max(0.0, min(1.0, self.cfg.scale_fast_weight))
             w_slow = max(0.0, min(1.0, self.cfg.scale_slow_weight))
             w_sum = w_fast + w_slow
-            if w_sum <= 1e-9:
+            if w_sum <= 1e-9: 
                 w_fast, w_slow = 0.5, 0.5
-            else:
+            else:             
                 w_fast, w_slow = w_fast / w_sum, w_slow / w_sum
-            
-            ewma_mix = (w_fast * self._ewma_abs_fast + 
-                       w_slow * self._ewma_abs_delta)
-            sigma_floor = self._robust_mad_sigma() * self.cfg.mad_multiplier
+
+            # 60秒窗口 tps
+            current_tps = 0.0
+            if len(self._recv_rate_window) >= 2:
+                win_span = self._recv_rate_window[-1] - self._recv_rate_window[0]
+                current_tps = len(self._recv_rate_window) / max(60.0, win_span)
+
+            # 自适应权重 & 地板
+            w_fast_eff = w_fast * min(1.0, (current_tps / self._r_ref) ** self._beta)
+            w_slow_eff = 1.0 - w_fast_eff
+            ewma_mix = w_fast_eff * self._ewma_abs_fast + w_slow_eff * self._ewma_abs_delta
+            sigma_floor_base = self._robust_mad_sigma() * self.cfg.mad_multiplier
+            boost = max(1.0, (self._r_ref / max(current_tps, 0.2)) ** self._gamma)
+            sigma_floor = sigma_floor_base * boost
             scale = max(ewma_mix, sigma_floor, 1e-9)
         else:
-            # 原始EWMA尺度
             scale = max(self._ewma_abs_delta, 1e-9)
             
         # 尺度零检查

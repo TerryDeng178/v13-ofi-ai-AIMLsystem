@@ -14,12 +14,12 @@ system:
   author: "V13 Team"
   created_at: "2025-10-21"
   
-  # Phase A1优化部署信息
+  # P0修复后生产部署信息
   deployment:
-    phase: "A1_optimized"
-    parameters_source: "Phase A1实验A1结果"
+    phase: "P0_fixed_production"
+    parameters_source: "P0修复后低活跃时段验证"
     optimization_date: "2025-10-21"
-    performance_target: "P(|Z|>2) ≤ 8%"
+    performance_target: "P(|Z|>2) ≤ 8%, Scale稳定性≥20"
     baseline_parameters:
       z_mode: "delta"
       scale_mode: "hybrid"
@@ -27,6 +27,12 @@ system:
       scale_fast_weight: 0.20
       half_life_trades: 600
       winsor_limit: 8.0
+      # P0修复参数
+      tau_fast_sec: 60.0      # 快速EWMA时间半衰期
+      tau_slow_sec: 600.0     # 慢速EWMA时间半衰期
+      r_ref: 1.5              # 基准活动度(tps)
+      gamma: 0.7              # 地板抬升系数
+      beta: 1.0               # 权重削弱系数
 
 # ============================================================================
 # CVD组件 - Phase A1优化参数

@@ -1,21 +1,23 @@
-# RealOFICalculator 使用说明
+# RealOFICalculator 使用说明 (L1 OFI版本)
 
 ## 📋 概述
 
-`RealOFICalculator` 是 V13 系统的核心OFI（Order Flow Imbalance）计算组件，基于订单簿快照计算加权OFI指标。
+`RealOFICalculator` 是 V13 系统的核心OFI（Order Flow Imbalance）计算组件，基于订单簿快照计算L1价跃迁敏感的OFI指标。
 
 **模块**: `v13_ofi_ai_system/src/real_ofi_calculator.py` *(以项目实际路径为准)*  
-**任务**: Task 1.2.1 - 创建OFI计算器基础类  
-**创建时间**: 2025-10-17
+**任务**: Task 1.2.1 - 创建OFI计算器基础类 (L1价跃迁敏感版本)  
+**创建时间**: 2025-10-17  
+**最后更新**: 2025-10-21 (L1 OFI价跃迁敏感版本)
 
 ---
 
 ## 🎯 核心功能
 
-1. **加权OFI计算**: 5档订单簿深度加权
-2. **Z-score标准化**: 滚动窗口标准化（优化版，"上一窗口"基线）
-3. **EMA平滑**: 指数移动平均平滑
-4. **数据清洗**: 自动处理无效数据
+1. **L1 OFI计算**: 最优价跃迁敏感版本，检测价格跃迁冲击
+2. **加权OFI计算**: 5档订单簿深度加权
+3. **Z-score标准化**: 滚动窗口标准化（优化版，"上一窗口"基线）
+4. **EMA平滑**: 指数移动平均平滑
+5. **数据清洗**: 自动处理无效数据
 
 ---
 
@@ -335,17 +337,28 @@ A: 用于验证计算正确性：`sum(k_components) ≈ ofi` (误差<1e-9)。
 
 ## 📊 技术细节
 
-### OFI计算公式
+### L1 OFI计算公式
 
 ```
-对于每一档 k (k=0 to K-1):
-    Δbid_k = bid_qty_k(t) - bid_qty_k(t-1)
-    Δask_k = ask_qty_k(t) - ask_qty_k(t-1)
+对于最优档位 (k=0):
+    if 价格跃迁:
+        bid_impact = 新最优价队列 - 旧最优价队列
+        ask_impact = 新最优价队列 - 旧最优价队列
+        OFI_0 = w_0 × (bid_impact - ask_impact)
+    else:
+        OFI_0 = w_0 × (Δbid_0 - Δask_0)  # 标准数量变化
+
+对于其余档位 (k=1 to K-1):
     OFI_k = w_k × (Δbid_k - Δask_k)
 
 总OFI:
     OFI = Σ OFI_k
 ```
+
+**L1价跃迁冲击逻辑**:
+- 价上涨：新最优价队列为正冲击，旧队列为负冲击
+- 价下跌：旧最优价队列为负冲击，新队列为正冲击
+- 价格不变：使用标准数量变化
 
 ### Z-score标准化（优化版）
 
@@ -401,7 +414,7 @@ else:
 
 ---
 
-**版本**: V13.1.2.1  
-**最后更新**: 2025-10-17  
+**版本**: V13.1.2.1 (L1 OFI版本)  
+**最后更新**: 2025-10-21  
 **维护者**: V13 OFI+CVD+AI System Team
 
