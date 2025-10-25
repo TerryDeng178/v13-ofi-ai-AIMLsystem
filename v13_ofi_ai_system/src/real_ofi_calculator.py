@@ -45,13 +45,18 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass
 from typing import Optional, List, Tuple, Dict
+import logging
+
+# 模块级logger
+logger = logging.getLogger(__name__)
+logger.propagate = True
 
 @dataclass
 class OFIConfig:
     """OFI计算器配置类"""
     levels: int = 5  # 订单簿档位数
     weights: Optional[List[float]] = None  # 自定义权重，默认None使用标准权重
-    z_window: int = 300  # Z-score滚动窗口大小
+    z_window: int = 150  # 300 → 150 (缩短Z-score窗口，快速点火)
     ema_alpha: float = 0.2  # EMA平滑系数
 
 def _is_finite_number(x: float) -> bool:
@@ -462,4 +467,48 @@ class RealOFICalculator:
             NotImplementedError: 此版本暂不支持增量模式
         """
         raise NotImplementedError("Task 1.2.1 implements snapshot mode only.")
+    
+    def update_params(self, *, z_window: int = None, z_clip: float = None, 
+                     ema_alpha: float = None, levels: int = None, weights: List[float] = None):
+        """
+        更新OFI计算器参数
+        
+        Args:
+            z_window: Z-score窗口大小
+            z_clip: Z-score裁剪阈值
+            ema_alpha: EMA平滑系数
+            levels: 订单簿档位数
+            weights: 权重列表
+        """
+        if z_window and z_window != self.z_window:
+            self.z_window = int(z_window)
+            # 重建历史窗口
+            from collections import deque
+            self.ofi_hist = deque(list(self.ofi_hist)[-self.z_window:], maxlen=self.z_window)
+            logger.info(f"Updated z_window to {self.z_window}")
+            
+        if z_clip is not None:
+            # 如需 z_clip，可在 Z 计算处统一裁剪
+            logger.info(f"Updated z_clip to {z_clip}")
+            
+        if ema_alpha is not None:
+            self.ema_alpha = float(ema_alpha)
+            logger.info(f"Updated ema_alpha to {self.ema_alpha}")
+            
+        if levels and levels != self.K:
+            self.K = int(levels)
+            # 重建订单簿缓存
+            self.bids = [[0.0, 0.0] for _ in range(self.K)]
+            self.asks = [[0.0, 0.0] for _ in range(self.K)]
+            self.prev_bids = [[0.0, 0.0] for _ in range(self.K)]
+            self.prev_asks = [[0.0, 0.0] for _ in range(self.K)]
+            logger.info(f"Updated levels to {self.K}")
+            
+        if weights and isinstance(weights, (list, tuple)) and len(weights) >= self.K:
+            self.w = [float(w) for w in weights[:self.K]]
+            # 归一化权重
+            total = sum(self.w)
+            if total > 0:
+                self.w = [w / total for w in self.w]
+            logger.info(f"Updated weights to {self.w}")
 

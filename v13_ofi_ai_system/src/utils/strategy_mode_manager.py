@@ -26,10 +26,14 @@ from collections import deque
 import pytz
 import numpy as np
 
-# Fix Windows UTF-8 output
-if sys.platform == 'win32':
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+# 注释掉Windows UTF-8输出修复以避免IO冲突
+# 注意：替换sys.stdout和sys.stderr会导致logging系统失败
+# if sys.platform == 'win32':
+#     try:
+#         sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+#         sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+#     except Exception as e:
+#         pass
 
 logger = logging.getLogger(__name__)
 
@@ -152,11 +156,11 @@ class StrategyModeManager:
         # 模式配置
         self.mode_setting = self.strategy_config.get('mode', 'auto')  # auto | active | quiet
         
-        # 迟滞配置
+        # 迟滞配置 - 进攻版设置（减少保守性）
         hysteresis = self.strategy_config.get('hysteresis', {})
         self.window_secs = hysteresis.get('window_secs', 60)
-        self.min_active_windows = hysteresis.get('min_active_windows', 3)
-        self.min_quiet_windows = hysteresis.get('min_quiet_windows', 6)
+        self.min_active_windows = hysteresis.get('min_active_windows', 2)  # 3 → 2 (减少active确认窗口)
+        self.min_quiet_windows = hysteresis.get('min_quiet_windows', 4)   # 6 → 4 (减少quiet确认窗口)
         
         # 触发器配置
         triggers = self.strategy_config.get('triggers', {})
@@ -178,15 +182,16 @@ class StrategyModeManager:
             self.active_windows = self._parse_time_windows(active_windows_raw)
         self.wrap_midnight = schedule_config.get('wrap_midnight', True)
         
-        # 市场触发器
+        # 市场触发器 - 进攻版阈值设置（扩大场景覆盖）
         market_config = triggers.get('market', {})
         self.market_enabled = market_config.get('enabled', True)
         self.market_window_secs = market_config.get('window_secs', 60)
-        self.min_trades_per_min = market_config.get('min_trades_per_min', 500)
-        self.min_quote_updates_per_sec = market_config.get('min_quote_updates_per_sec', 100)
-        self.max_spread_bps = market_config.get('max_spread_bps', 5)
-        self.min_volatility_bps = market_config.get('min_volatility_bps', 10)
-        self.min_volume_usd = market_config.get('min_volume_usd', 1000000)
+        # 进攻版阈值：大幅降低门槛以扩大场景覆盖（直接使用优化值）
+        self.min_trades_per_min = 150  # 直接设置优化值
+        self.min_quote_updates_per_sec = 40  # 直接设置优化值
+        self.max_spread_bps = 5  # 直接设置优化值
+        self.min_volatility_bps = 4  # 直接设置优化值
+        self.min_volume_usd = 200000  # 直接设置优化值
         self.use_median = market_config.get('use_median', True)
         self.winsorize_percentile = market_config.get('winsorize_percentile', 95)
         
@@ -208,6 +213,16 @@ class StrategyModeManager:
         self.params_lock = threading.RLock()
         self.current_params = None  # 当前生效的参数快照
         
+        # === 新增：场景参数快照 ===
+        self.current_params_by_scenario = {}  # {'A_H': {...}, 'A_L': {...}, 'Q_H': {...}, 'Q_L': {...}}
+        self.scenario_config_version = 'unknown'  # 当前场景配置版本
+        self._last_scenario_update = None  # 最后更新时间
+        
+        # 添加缺失的属性用于配置校验
+        self.kind = 'fusion'  # 默认信号类型
+        self.horizon = 300    # 默认时间窗口
+        self.cost_bps = 3.0   # 默认交易成本
+        
         # 特性开关
         features = self.config.get('features', {}).get('strategy', {})
         self.dynamic_mode_enabled = features.get('dynamic_mode_enabled', True)
@@ -216,8 +231,63 @@ class StrategyModeManager:
         # 初始化Prometheus指标
         self._init_metrics()
         
+        # 加载场景参数
+        self._load_scenario_parameters()
+        
         logger.info(f"StrategyModeManager initialized: mode={self.mode_setting}, "
                    f"schedule_enabled={self.schedule_enabled}, market_enabled={self.market_enabled}")
+    
+    def _load_scenario_parameters(self):
+        """
+        加载2x2场景参数配置
+        """
+        try:
+            scenario_config = self.config.get('scenario_parameters', {})
+            for scenario, params in scenario_config.items():
+                self.current_params_by_scenario[scenario] = params.copy()
+                logger.info(f"Loaded scenario params for {scenario}: {list(params.keys())}")
+            
+            # 更新指标
+            _metrics.set_info('strategy_scenario_params_info', {
+                'version': self.scenario_config_version,
+                'scenarios_count': len(self.current_params_by_scenario)
+            })
+            
+        except Exception as e:
+            logger.error(f"Failed to load scenario parameters: {e}")
+    
+    def load_scenario_params(self, scenario: str) -> Dict[str, Any]:
+        """
+        加载指定场景的参数
+        
+        Args:
+            scenario: 场景名称 (A_H, A_L, Q_H, Q_L)
+            
+        Returns:
+            Dict[str, Any]: 场景参数
+        """
+        return self.current_params_by_scenario.get(scenario, {})
+    
+    def update_scenario_params(self, scenario: str, params: Dict[str, Any]) -> bool:
+        """
+        更新指定场景的参数
+        
+        Args:
+            scenario: 场景名称
+            params: 新参数
+            
+        Returns:
+            bool: 是否成功
+        """
+        try:
+            with self.params_lock:
+                self.current_params_by_scenario[scenario] = params.copy()
+                self.scenario_config_version = f"{int(time.time())}"
+                logger.info(f"Updated scenario params for {scenario}: {list(params.keys())}")
+                return True
+        except Exception as e:
+            logger.error(f"Failed to update scenario params for {scenario}: {e}")
+            return False
     
     def _load_from_config_loader(self, config_loader) -> Dict[str, Any]:
         """
@@ -336,6 +406,9 @@ class StrategyModeManager:
         # 15. strategy_params_update_failures_total - 参数更新失败次数（按module标签）
         # 预初始化为0，确保"开箱即见"
         _metrics.inc_counter('strategy_params_update_failures_total', {'module': 'init'}, value=0.0)
+        
+        # 16. strategy_scenario_params_info - 场景参数信息
+        _metrics.set_info('strategy_scenario_params_info', {'version': 'unknown', 'scenarios_count': 0})
         
         logger.debug("Prometheus metrics registered (13 strategy metrics, samples will be generated at runtime)")
     
@@ -458,9 +531,48 @@ class StrategyModeManager:
         
         return False
     
+    def _get_quality_conditions(self, mode: StrategyMode, activity: MarketActivity) -> List[bool]:
+        """
+        获取质量过滤条件（按场景差异化）
+        
+        Args:
+            mode: 当前策略模式
+            activity: 市场活跃度数据
+        
+        Returns:
+            List[bool]: 质量过滤条件列表
+        """
+        if mode == StrategyMode.ACTIVE:
+            # Active模式：相对严格
+            return [
+                activity.trades_per_min >= 100,
+                activity.quote_updates_per_sec >= 20,
+                activity.spread_bps <= 8,
+                activity.volatility_bps >= 2,
+                activity.volume_usd >= 100000
+            ]
+        elif mode == StrategyMode.QUIET:
+            # Quiet模式：最宽松
+            return [
+                activity.trades_per_min >= 50,
+                activity.quote_updates_per_sec >= 10,
+                activity.spread_bps <= 12,
+                activity.volatility_bps >= 1,
+                activity.volume_usd >= 50000
+            ]
+        else:
+            # Normal模式：中等要求
+            return [
+                activity.trades_per_min >= 75,
+                activity.quote_updates_per_sec >= 15,
+                activity.spread_bps <= 10,
+                activity.volatility_bps >= 1.5,
+                activity.volume_usd >= 75000
+            ]
+    
     def check_market_active(self, activity: MarketActivity) -> bool:
         """
-        检查市场触发器是否判定为活跃（基于滑动窗口+稳健统计）
+        检查市场触发器是否判定为活跃（二阶段准入策略）
         
         Args:
             activity: 市场活跃度数据
@@ -474,16 +586,26 @@ class StrategyModeManager:
         # 将当前活跃度样本加入窗口
         self.market_samples.append(activity)
         
+        # 第一阶段：基础准入门槛（更宽松）
+        basic_conditions = [
+            activity.trades_per_min >= 50,           # 基础门槛
+            activity.quote_updates_per_sec >= 10,   # 基础门槛
+            activity.spread_bps <= 12,              # 基础门槛
+            activity.volatility_bps >= 1,           # 基础门槛
+            activity.volume_usd >= 50000            # 基础门槛
+        ]
+        
+        # 如果基础门槛不满足，直接返回False
+        if not all(basic_conditions):
+            return False
+        
+        # 第二阶段：质量过滤门槛（按场景差异化）
+        current_mode = self.get_current_mode()
+        quality_conditions = self._get_quality_conditions(current_mode, activity)
+        
         # 如果样本不足，使用当前单次快照（启动初期）
         if len(self.market_samples) < 3:
-            conditions = [
-                activity.trades_per_min >= self.min_trades_per_min,
-                activity.quote_updates_per_sec >= self.min_quote_updates_per_sec,
-                activity.spread_bps <= self.max_spread_bps,
-                activity.volatility_bps >= self.min_volatility_bps,
-                activity.volume_usd >= self.min_volume_usd
-            ]
-            return all(conditions)
+            return all(quality_conditions)
         
         # 基于滑动窗口计算稳健统计量
         trades = [s.trades_per_min for s in self.market_samples]
@@ -640,12 +762,65 @@ class StrategyModeManager:
         failed_modules = []
         with self.params_lock:
             try:
-                # TODO: 实际应用到各个子模块
-                # 这里需要与OFI/CVD/Risk/Performance模块集成
-                # 示例：
-                # self.ofi_module.update_params(new_params['ofi'])
-                # self.cvd_module.update_params(new_params['cvd'])
-                # ...
+                # 实际应用到各个子模块 - 2x2场景参数真正下发
+                scenario_params = self.current_params_by_scenario.get(self._current_scenario, {})
+                if scenario_params:
+                    # 1) CoreAlgo 风控/闸门
+                    if hasattr(self, 'core_algo') and self.core_algo:
+                        self.core_algo.set_gates(
+                            weak_signal_threshold=self.config.get('weak_signal_threshold', 0.15),
+                            consistency_min=scenario_params.get('consistency_min', 0.5),
+                            min_hold_time_sec=scenario_params.get('min_hold_time_sec', 30),
+                        )
+                        self.core_algo.set_targets(
+                            tp_bps=scenario_params.get('TP_BPS', 25), 
+                            sl_bps=scenario_params.get('SL_BPS', 12)
+                        )
+                        logger.info(f"Applied gates to core_algo: {self._current_scenario}")
+
+                    # 2) OFI/CVD 场景参数
+                    if hasattr(self, 'ofi_calc') and self.ofi_calc:
+                        self.ofi_calc.update_params(
+                            z_window=scenario_params.get('ofi_z_window', 150), 
+                            z_clip=scenario_params.get('ofi_z_clip', 3.0)
+                        )
+                    if hasattr(self, 'cvd_calc') and self.cvd_calc:
+                        self.cvd_calc.update_params(
+                            z_mode=scenario_params.get('cvd_z_mode', 'delta'), 
+                            freeze_min=scenario_params.get('cvd_freeze_min', 25)
+                        )
+
+                    # 3) 融合器阈值 - 2x2场景自适应
+                    if hasattr(self, 'fusion_component') and self.fusion_component:
+                        # 根据场景调整融合器参数
+                        scenario = self._current_scenario
+                        if scenario.startswith('A_'):  # 活跃场景：放宽阈值，降低min_consecutive
+                            min_consecutive = 0  # 活跃场景立即触发
+                            hysteresis_exit = 0.8  # 降低迟滞
+                            cooldown_secs = 0.8   # 缩短冷却
+                        elif scenario.startswith('Q_'):  # 安静场景：收紧阈值，保持保守
+                            min_consecutive = 2   # 保持保守
+                            hysteresis_exit = 1.2 # 增加迟滞
+                            cooldown_secs = 1.5   # 延长冷却
+                        else:  # 默认场景
+                            min_consecutive = 1
+                            hysteresis_exit = 1.0
+                            cooldown_secs = 1.2
+                        
+                        self.fusion_component.set_thresholds(
+                            fuse_buy=scenario_params.get('fuse_buy', None),
+                            fuse_strong_buy=scenario_params.get('fuse_strong_buy', None),
+                            fuse_sell=scenario_params.get('fuse_sell', None),
+                            fuse_strong_sell=scenario_params.get('fuse_strong_sell', None),
+                            min_consistency=scenario_params.get('consistency_min', 0.5),
+                            strong_min_consistency=max(0.75, scenario_params.get('consistency_min', 0.5) + 0.25),
+                            max_lag=0.6, 
+                            hysteresis_exit=hysteresis_exit, 
+                            cooldown_secs=cooldown_secs, 
+                            min_consecutive=min_consecutive, 
+                            z_clip=3.0
+                        )
+                        logger.info(f"Applied 2x2 thresholds to fusion: {scenario} (min_consecutive={min_consecutive}, hysteresis={hysteresis_exit})")
                 
                 self.current_params = new_params
                 
@@ -653,11 +828,11 @@ class StrategyModeManager:
                 duration_ms = (time.time() - start_time) * 1000
                 _metrics.observe_histogram('strategy_params_update_duration_ms', duration_ms, {'result': 'success'})
                 
-                logger.info(f"✅ Applied params for mode: {mode.value} (took {duration_ms:.2f}ms)")
+                logger.info(f"[OK] Applied params for mode: {mode.value} (took {duration_ms:.2f}ms)")
                 return True, []
                 
             except Exception as e:
-                logger.error(f"❌ Failed to apply params for mode {mode.value}: {e}")
+                logger.error(f"[ERROR] Failed to apply params for mode {mode.value}: {e}")
                 
                 # 记录失败指标
                 duration_ms = (time.time() - start_time) * 1000
@@ -717,6 +892,143 @@ class StrategyModeManager:
             return truncated
         
         return diff
+    
+    def load_scenario_params(self, path_or_dict):
+        """
+        加载四场景参数：支持 YAML/JSON 文件或字典
+        
+        Args:
+            path_or_dict: 配置文件路径或配置字典
+            
+        Returns:
+            bool: 是否加载成功
+        """
+        with self.params_lock:
+            try:
+                cfg = path_or_dict
+                if isinstance(path_or_dict, str):
+                    import pathlib
+                    p = pathlib.Path(path_or_dict)
+                    if p.suffix.lower() in {".yaml", ".yml"}:
+                        import yaml
+                        cfg = yaml.safe_load(p.read_text(encoding="utf-8"))
+                    else:
+                        import json
+                        cfg = json.loads(p.read_text(encoding="utf-8"))
+
+                # 配置校验：检查关键参数是否与在线实际一致
+                expected_signal_kind = cfg.get('signal_kind')
+                expected_horizon_s = cfg.get('horizon_s')
+                expected_cost_bps = cfg.get('cost_bps')
+                
+                if expected_signal_kind and expected_signal_kind != self.kind:
+                    logger.warning(f"[WARN] 信号类型不匹配: 配置={expected_signal_kind}, 期望={self.kind}")
+                
+                if expected_horizon_s and expected_horizon_s != self.horizon:
+                    logger.warning(f"[WARN] 时间窗口不匹配: 配置={expected_horizon_s}s, 期望={self.horizon}s")
+                
+                if expected_cost_bps and expected_cost_bps != self.cost_bps:
+                    logger.warning(f"[WARN] 交易成本不匹配: 配置={expected_cost_bps}bps, 期望={self.cost_bps}bps")
+
+                sc = cfg.get("scenarios", {})
+                # 只收白名单四场景，防脏数据
+                valid_scenarios = {k: dict(v) for k, v in sc.items() if k in {"A_H","A_L","Q_H","Q_L"}}
+                
+                # 缺场景兜底：保留旧值或使用安全默认
+                if not valid_scenarios:
+                    logger.warning("未找到有效的场景参数，保留当前配置")
+                    return False
+                
+                # 检查是否有缺失的场景，使用保守默认值
+                default_params = {
+                    'Z_HI_LONG': 2.5,
+                    'Z_HI_SHORT': 2.5,
+                    'Z_MID': 0.5,
+                    'TP_BPS': 12,
+                    'SL_BPS': 9
+                }
+                
+                for scenario in {"A_H","A_L","Q_H","Q_L"}:
+                    if scenario not in valid_scenarios:
+                        logger.warning(f"场景 {scenario} 缺失，使用保守默认值")
+                        valid_scenarios[scenario] = default_params.copy()
+                
+                # 原子替换场景参数
+                self.current_params_by_scenario = valid_scenarios
+                self.scenario_config_version = cfg.get('version', 'unknown')
+                self._last_scenario_update = time.time()  # 记录更新时间
+                
+                # 记录一次指标 + 原子替换
+                _metrics.set_info('strategy_scenario_params_info', {
+                    'version': self.scenario_config_version,
+                    'scenarios_count': len(valid_scenarios),
+                    'signal_kind': cfg.get('signal_kind', 'unknown'),
+                    'horizon_s': cfg.get('horizon_s', 'unknown'),
+                    'cost_bps': cfg.get('cost_bps', 'unknown')
+                })
+                
+                logger.info(f"[OK] 成功加载场景参数 v{self.scenario_config_version}, "
+                           f"场景数: {len(valid_scenarios)}, "
+                           f"更新时间: {datetime.fromtimestamp(self._last_scenario_update).isoformat()}")
+                
+                # 打印场景摘要
+                for scenario, params in valid_scenarios.items():
+                    logger.info(f"  {scenario}: Z_HI_LONG={params.get('Z_HI_LONG', 'N/A')}, "
+                               f"Z_HI_SHORT={params.get('Z_HI_SHORT', 'N/A')}, "
+                               f"TP_BPS={params.get('TP_BPS', 'N/A')}, "
+                               f"SL_BPS={params.get('SL_BPS', 'N/A')}")
+                
+                return True
+                
+            except Exception as e:
+                logger.error(f"[ERROR] 加载场景参数失败: {e}")
+                return False
+    
+    def get_params_for_scenario(self, scenario_2x2: str, side: str = "long") -> dict:
+        """
+        供核心算法/纸上执行器调用：
+        根据场景返回阈值/风控参数。side in {"long","short"} 仅用于取 Z_HI_LONG/SHORT。
+        
+        Args:
+            scenario_2x2: 场景标识 ('A_H', 'A_L', 'Q_H', 'Q_L')
+            side: 交易方向 ('long' 或 'short')
+            
+        Returns:
+            dict: 场景参数
+        """
+        with self.params_lock:
+            base = self.current_params_by_scenario.get(scenario_2x2) or {}
+            out = dict(base)  # 拷贝
+            
+            # 统一输出键名，方便调用方
+            out["Z_HI"] = base.get("Z_HI_LONG" if side == "long" else "Z_HI_SHORT", 2.5)
+            out["Z_MID"] = base.get("Z_MID", 0.5)
+            out["TP_BPS"] = base.get("TP_BPS", 12)
+            out["SL_BPS"] = base.get("SL_BPS", 9)
+            
+            # 添加场景信息
+            out["scenario"] = scenario_2x2
+            out["side"] = side
+            out["config_version"] = self.scenario_config_version
+            
+            return out
+    
+    def get_scenario_stats(self) -> Dict[str, Any]:
+        """获取场景参数统计信息"""
+        with self.params_lock:
+            last_update_str = None
+            if self._last_scenario_update:
+                last_update_str = datetime.fromtimestamp(self._last_scenario_update).isoformat()
+            
+            return {
+                'config_version': self.scenario_config_version,
+                'scenarios_count': len(self.current_params_by_scenario),
+                'available_scenarios': list(self.current_params_by_scenario.keys()),
+                'last_update': last_update_str,
+                'signal_kind': self.kind,
+                'horizon_s': self.horizon,
+                'cost_bps': self.cost_bps
+            }
     
     def update_mode(self, activity: Optional[MarketActivity] = None) -> Dict[str, Any]:
         """
@@ -781,7 +1093,7 @@ class StrategyModeManager:
             }
             
             # 结构化日志（JSON格式）
-            logger.error(f"❌ Mode change failed: {json.dumps(event, ensure_ascii=False)}")
+            logger.error(f"[ERROR] Mode change failed: {json.dumps(event, ensure_ascii=False)}")
             
             return event
         
@@ -911,8 +1223,8 @@ if __name__ == "__main__":
     manager = StrategyModeManager(config)
     
     # 测试时间表判定
-    print(f"\n✅ Current mode: {manager.get_current_mode().value}")
-    print(f"✅ Schedule active: {manager.check_schedule_active()}")
+    print(f"\n[OK] Current mode: {manager.get_current_mode().value}")
+    print(f"[OK] Schedule active: {manager.check_schedule_active()}")
     
     # 测试市场活跃度判定
     activity = MarketActivity()
@@ -922,7 +1234,7 @@ if __name__ == "__main__":
     activity.volatility_bps = 15
     activity.volume_usd = 2000000
     
-    print(f"✅ Market active: {manager.check_market_active(activity)}")
+    print(f"[OK] Market active: {manager.check_market_active(activity)}")
     
     # 测试模式切换
     event = manager.update_mode(activity)
@@ -931,5 +1243,36 @@ if __name__ == "__main__":
     
     # 获取统计
     stats = manager.get_mode_stats()
-    print(f"\n📊 Mode stats: {stats}")
+    print(f"\n[STATS] Mode stats: {stats}")
+    
+    # 测试场景参数功能
+    print("\n🧪 测试场景参数功能:")
+    
+    # 模拟加载场景参数配置
+    sample_config = {
+        'signal_kind': 'fusion',
+        'horizon_s': 300,
+        'cost_bps': 3,
+        'version': '20251024_001',
+        'scenarios': {
+            'A_H': {'Z_HI_LONG': 2.75, 'Z_HI_SHORT': 2.50, 'Z_MID': 0.75, 'TP_BPS': 15, 'SL_BPS': 10},
+            'A_L': {'Z_HI_LONG': 2.25, 'Z_HI_SHORT': 2.25, 'Z_MID': 0.60, 'TP_BPS': 12, 'SL_BPS': 9},
+            'Q_H': {'Z_HI_LONG': 2.50, 'Z_HI_SHORT': 2.75, 'Z_MID': 0.75, 'TP_BPS': 10, 'SL_BPS': 8},
+            'Q_L': {'Z_HI_LONG': 2.00, 'Z_HI_SHORT': 2.00, 'Z_MID': 0.50, 'TP_BPS': 8, 'SL_BPS': 7}
+        }
+    }
+    
+    # 加载场景参数
+    success = manager.load_scenario_params(sample_config)
+    print(f"[OK] 场景参数加载: {'成功' if success else '失败'}")
+    
+    # 测试获取场景参数
+    for scenario in ['A_H', 'A_L', 'Q_H', 'Q_L']:
+        for side in ['long', 'short']:
+            params = manager.get_params_for_scenario(scenario, side)
+            print(f"  {scenario} {side}: Z_HI={params['Z_HI']}, TP_BPS={params['TP_BPS']}, SL_BPS={params['SL_BPS']}")
+    
+    # 获取场景统计
+    scenario_stats = manager.get_scenario_stats()
+    print(f"\n[STATS] 场景参数统计: {scenario_stats}")
 

@@ -40,14 +40,19 @@ from dataclasses import dataclass
 from collections import deque
 from typing import Optional, Iterable, Tuple, Dict, Any
 import math
+import logging
+
+# 模块级logger
+logger = logging.getLogger(__name__)
+logger.propagate = True
 
 @dataclass
 class CVDConfig:
     """CVD计算器配置类"""
-    z_window: int = 300           # Z-score滚动窗口大小
+    z_window: int = 150           # 300 → 150 (缩短Z-score窗口，快速点火)
     ema_alpha: float = 0.2        # EMA平滑系数
     use_tick_rule: bool = True    # 无 is_buy 时回退到 Tick Rule
-    warmup_min: int = 5           # 冷启动阈值下限
+    warmup_min: int = 3           # 5 → 3 (降低暖启动阈值)
     auto_flip_enabled: bool = False  # 是否启用自动翻转
     auto_flip_threshold: float = 0.04  # AUC提升阈值，超过此值自动翻转
     
@@ -55,7 +60,7 @@ class CVDConfig:
     z_mode: str = "level"         # Z-score模式: "level"(旧版) | "delta"(新版)
     half_life_trades: int = 300   # Delta-Z半衰期（笔数）
     winsor_limit: float = 8.0     # Z-score截断阈值
-    freeze_min: int = 50          # Z-score最小样本数
+    freeze_min: int = 25          # Z-score最小样本数（降低冻结门槛）
     stale_threshold_ms: int = 5000 # Stale冻结阈值（毫秒）
     
     # 空窗后冻结配置（事件时间间隔）
@@ -760,7 +765,7 @@ class RealCVDCalculator:
             
             # 诊断日志：检查反相/归一化问题（每300笔记录一次，避免阻塞）
             if self._trades_count % 1000 == 0:  # 每1000笔打印一次
-                print(f"🔍 DIAGNOSTIC [count={self._trades_count}]:")
+                print(f"[DIAGNOSTIC] [count={self._trades_count}]:")
                 print(f"  ewma_fast={self._ewma_abs_fast:.6f}")
                 print(f"  ewma_slow={self._ewma_abs_delta:.6f}")
                 print(f"  w_fast={self.cfg.scale_fast_weight}, w_slow={self.cfg.scale_slow_weight}")
@@ -845,6 +850,36 @@ class RealCVDCalculator:
         # 暖启动检查
         if self._trades_count < self.cfg.freeze_min:
             return True, False, None
+    
+    def update_params(self, *, z_mode: str = None, freeze_min: int = None, 
+                     z_window: int = None, ema_alpha: float = None):
+        """
+        更新CVD计算器参数
+        
+        Args:
+            z_mode: Z-score模式 ("level" 或 "delta")
+            freeze_min: 最小冻结样本数
+            z_window: Z-score窗口大小
+            ema_alpha: EMA平滑系数
+        """
+        if z_mode in {"level", "delta"}:
+            self.cfg.z_mode = z_mode
+            logger.info(f"Updated z_mode to {self.cfg.z_mode}")
+            
+        if isinstance(freeze_min, int) and freeze_min > 0:
+            self.cfg.freeze_min = freeze_min
+            logger.info(f"Updated freeze_min to {self.cfg.freeze_min}")
+            
+        if z_window and z_window != self.cfg.z_window:
+            self.cfg.z_window = int(z_window)
+            # 重建历史窗口
+            from collections import deque
+            self._hist = deque(list(self._hist)[-self.cfg.z_window:], maxlen=self.cfg.z_window)
+            logger.info(f"Updated z_window to {self.cfg.z_window}")
+            
+        if ema_alpha is not None:
+            self.cfg.ema_alpha = float(ema_alpha)
+            logger.info(f"Updated ema_alpha to {self.cfg.ema_alpha}")
             
         # 计算稳健尺度（与 _z_delta 同口径：时间衰减 + 活动度自适应）
         if self.cfg.scale_mode == "hybrid":

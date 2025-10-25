@@ -32,27 +32,27 @@ class OFICVDFusionConfig:
     w_ofi: float = 0.6
     w_cvd: float = 0.4
     
-    # 信号阈值
-    fuse_buy: float = 1.5
-    fuse_strong_buy: float = 2.5
-    fuse_sell: float = -1.5
-    fuse_strong_sell: float = -2.5
+    # 信号阈值 - 进攻版配置（提升交易频率）
+    fuse_buy: float = 1.2          # 1.5 → 1.2 (降低买入门槛)
+    fuse_strong_buy: float = 2.0   # 2.5 → 2.0 (降低强买入门槛)
+    fuse_sell: float = -1.2        # -1.5 → -1.2 (降低卖出门槛)
+    fuse_strong_sell: float = -2.0 # -2.5 → -2.0 (降低强卖出门槛)
     
-    # 一致性阈值
-    min_consistency: float = 0.3
-    strong_min_consistency: float = 0.7
+    # 一致性阈值 - 进攻版配置
+    min_consistency: float = 0.2   # 0.3 → 0.2 (降低一致性要求)
+    strong_min_consistency: float = 0.6  # 0.7 → 0.6 (降低强一致性要求)
     
-    # 数据处理
-    z_clip: float = 5.0
-    max_lag: float = 0.300  # 最大时间差(秒)
+    # 数据处理 - 进攻版配置
+    z_clip: float = 4.0            # 5.0 → 4.0 (放宽Z-score裁剪)
+    max_lag: float = 0.25         # 0.800 → 0.25 (收紧时间对齐要求)
     
-    # 去噪参数
-    hysteresis_exit: float = 1.2
-    cooldown_secs: float = 1.0
-    min_consecutive: int = 2
+    # 去噪参数 - 进攻版配置（大幅提升触发率）
+    hysteresis_exit: float = 0.6  # 0.8 → 0.6 (进一步减小迟滞)
+    cooldown_secs: float = 0.6    # 0.3 → 0.6 (适度冷却，避免过度频繁)
+    min_consecutive: int = 1      # 保持1 (最低持续门槛)
     
-    # 暖启动
-    min_warmup_samples: int = 30
+    # 暖启动 - 进攻版配置
+    min_warmup_samples: int = 20   # 10 → 20 (平衡快速点火与数据质量)
 
 
 class OFI_CVD_Fusion:
@@ -130,10 +130,22 @@ class OFI_CVD_Fusion:
             fuse_sell = thresholds.get('fuse_sell', -1.5)
             fuse_strong_sell = thresholds.get('fuse_strong_sell', -2.5)
             
-            # 提取一致性配置
+            # 提取一致性配置（支持分场景）
             consistency = fusion_config.get('consistency', {})
-            min_consistency = consistency.get('min_consistency', 0.3)
-            strong_min_consistency = consistency.get('strong_min_consistency', 0.7)
+            regime_consistency = consistency.get('regime_consistency', {})
+            
+            # 获取当前regime（从核心算法传递）
+            current_regime = getattr(self, '_current_regime', 'normal')
+            regime_config = regime_consistency.get(current_regime, {})
+            
+            if regime_config:
+                # 使用分场景一致性阈值
+                min_consistency = regime_config.get('min_consistency', consistency.get('min_consistency', 0.15))
+                strong_min_consistency = regime_config.get('strong_min_consistency', consistency.get('strong_min_consistency', 0.4))
+            else:
+                # 使用基础一致性阈值
+                min_consistency = consistency.get('min_consistency', 0.15)
+                strong_min_consistency = consistency.get('strong_min_consistency', 0.4)
             
             # 提取数据处理配置
             data_processing = fusion_config.get('data_processing', {})
@@ -207,14 +219,15 @@ class OFI_CVD_Fusion:
         return False
     
     def _apply_denoising(self, signal: SignalType, fusion_score: float, 
-                        ts: float) -> tuple[SignalType, list]:
+                        ts: float, consistency: float = 0.0) -> tuple[SignalType, list]:
         """
-        应用去噪三件套
+        应用去噪三件套 - 增强版
         
         Args:
             signal: 原始信号
             fusion_score: 融合得分
             ts: 时间戳
+            consistency: 一致性得分
             
         Returns:
             (去噪后的信号, 去噪原因列表)
@@ -229,34 +242,68 @@ class OFI_CVD_Fusion:
             denoising_reasons.append("cooldown")
             return SignalType.NEUTRAL, denoising_reasons
         
-        # 2. 迟滞处理 - 只在信号强度下降时应用
+        # 2. 一致性加权迟滞处理 - 增强版
+        consistency_bonus = max(0.0, consistency - 0.3) * 0.5  # 一致性加分
+        adjusted_hysteresis = self.cfg.hysteresis_exit + consistency_bonus
+        
         if (self._last_signal == SignalType.STRONG_BUY and 
             signal == SignalType.BUY and 
-            fusion_score > self.cfg.hysteresis_exit):
+            fusion_score > adjusted_hysteresis):
             # 从强买入降级到买入时，如果得分仍然很高，保持强买入
             denoising_reasons.append("hysteresis_hold")
             signal = SignalType.STRONG_BUY
         elif (self._last_signal == SignalType.STRONG_SELL and 
               signal == SignalType.SELL and 
-              fusion_score < -self.cfg.hysteresis_exit):
+              fusion_score < -adjusted_hysteresis):
             # 从强卖出降级到卖出时，如果得分仍然很低，保持强卖出
             denoising_reasons.append("hysteresis_hold")
             signal = SignalType.STRONG_SELL
         elif (self._last_signal in [SignalType.BUY, SignalType.STRONG_BUY] and 
               signal == SignalType.NEUTRAL and 
-              fusion_score > self.cfg.hysteresis_exit):
+              fusion_score > adjusted_hysteresis):
             # 从买入信号变为中性时，如果得分仍然较高，保持买入
             denoising_reasons.append("hysteresis_hold")
             signal = self._last_signal
         elif (self._last_signal in [SignalType.SELL, SignalType.STRONG_SELL] and 
               signal == SignalType.NEUTRAL and 
-              fusion_score < -self.cfg.hysteresis_exit):
+              fusion_score < -adjusted_hysteresis):
             # 从卖出信号变为中性时，如果得分仍然较低，保持卖出
             denoising_reasons.append("hysteresis_hold")
             signal = self._last_signal
         
-        # 3. 最小持续检查 - 暂时禁用，先确保基本信号生成正常
-        # TODO: 重新设计最小持续逻辑
+        # 3. 一致性驱动的信号强度调整
+        if consistency > 0.7:  # 高一致性时放宽阈值
+            if signal == SignalType.BUY and fusion_score > self.cfg.fuse_buy * 0.8:
+                signal = SignalType.BUY
+                denoising_reasons.append("consistency_boost")
+            elif signal == SignalType.SELL and fusion_score < self.cfg.fuse_sell * 0.8:
+                signal = SignalType.SELL
+                denoising_reasons.append("consistency_boost")
+        elif consistency < 0.3:  # 低一致性时严格节流
+            if signal in [SignalType.BUY, SignalType.STRONG_BUY, SignalType.SELL, SignalType.STRONG_SELL]:
+                signal = SignalType.NEUTRAL
+                denoising_reasons.append("low_consistency_throttle")
+        
+        # 4. 最小持续检查 - 场景自适应版本
+        if signal != SignalType.NEUTRAL and self._last_signal == signal:
+            self._streak += 1
+        else:
+            self._streak = 0
+        
+        # 动态调整min_consecutive：活跃场景和高一致性时放宽
+        current_regime = getattr(self, '_current_regime', 'normal')
+        effective_min_consecutive = self.cfg.min_consecutive
+        
+        # 活跃场景(A_H/A_L)放宽要求
+        if current_regime in ['A_H', 'A_L']:
+            effective_min_consecutive = 0  # 活跃场景立即触发
+        # 高一致性时放宽要求
+        elif consistency > 0.7:
+            effective_min_consecutive = max(0, self.cfg.min_consecutive - 1)
+            
+        if signal != SignalType.NEUTRAL and self._streak < effective_min_consecutive:
+            signal = SignalType.NEUTRAL
+            denoising_reasons.append("min_duration")
         
         return signal, denoising_reasons
     
@@ -346,8 +393,8 @@ class OFI_CVD_Fusion:
               consistency > self.cfg.min_consistency):
             signal = SignalType.SELL
         
-        # 7. 去噪处理
-        signal, denoising_reasons = self._apply_denoising(signal, fusion_score, ts)
+        # 7. 去噪处理 - 传递一致性参数
+        signal, denoising_reasons = self._apply_denoising(signal, fusion_score, ts, consistency)
         reason_codes.extend(denoising_reasons)
         
         # 8. 状态更新
@@ -405,3 +452,26 @@ def create_fusion_config(**kwargs) -> OFICVDFusionConfig:
 
 # 默认配置实例
 DEFAULT_CONFIG = OFICVDFusionConfig()
+
+# 为OFI_CVD_Fusion类添加set_thresholds方法
+def set_thresholds(self, **kwargs):
+    """
+    统一入口设置阈值参数
+    
+    Args:
+        **kwargs: 阈值参数
+    """
+    # 仅允许改 cfg 上已有字段
+    for k, v in kwargs.items():
+        if v is not None and hasattr(self.cfg, k):
+            setattr(self.cfg, k, v)
+
+    # 如果权重被修改，重新归一化
+    tw = self.cfg.w_ofi + self.cfg.w_cvd
+    if tw <= 0:
+        raise ValueError("权重和必须大于0")
+    self.w_ofi = self.cfg.w_ofi / tw
+    self.w_cvd = self.cfg.w_cvd / tw
+
+# 动态添加方法到类
+OFI_CVD_Fusion.set_thresholds = set_thresholds

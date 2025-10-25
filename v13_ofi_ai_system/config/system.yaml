@@ -26,6 +26,9 @@ system:
 # 背离检测配置
 # ============================================================================
 divergence_detection:
+  # 是否启用背离检测
+  enabled: true
+  
   # 配置版本
   version: "v1.0"
   description: "背离检测参数配置，支持条件覆盖和热更新"
@@ -93,13 +96,54 @@ divergence_detection:
         swing_L: 21
         cooldown_secs: 60
   
+  # 枢轴检测参数
+  pivot_detection:
+    swing_L: 12                # 枢轴检测窗口长度
+    ema_k: 5                   # EMA平滑参数
+  
+  # 强度阈值
+  thresholds:
+    z_hi: 1.5                  # 高强度阈值
+    z_mid: 0.7                 # 中等强度阈值
+  
+  # 去噪参数
+  denoising:
+    min_separation: 6          # 最小枢轴间距
+    cooldown_secs: 1.0         # 冷却时间
+    warmup_min: 100            # 暖启动最小样本数
+    max_lag: 0.300             # 最大滞后时间
+  
+  # 融合参数
+  fusion:
+    use_fusion: true           # 是否使用融合指标
+  
+  # 性能配置
+  performance:
+    max_events_per_second: 100
+    batch_size: 10
+    queue_size: 1000
+  
+  # 监控配置
+  monitoring:
+    prometheus:
+      port: 8004
+      path: "/metrics"
+      scrape_interval: "5s"
+    
+    alerts:
+      enabled: true
+      rules:
+        - name: "divergence_detection_failure"
+          expr: "increase(divergence_events_total[5m]) == 0"
+          for: "10m"
+          severity: "warning"
+          summary: "背离检测模块无事件产生"
+  
   # 校准配置
   calibration:
     file: "config/calibration/divergence_score_calibration.json"
     version: "v1.0"
     description: "分数到期望收益/胜率映射"
-  
-  # 监控配置已移到顶级monitoring部分
   
   # 热更新配置
   hot_reload:
@@ -173,29 +217,61 @@ fusion_metrics:
         gate: 0.0
       description: "Quiet时段使用等权重"
   
-  # 信号阈值
+  # 信号阈值 - 保守配置（提高精准度）
   thresholds:
+    # 基础阈值
     fuse_buy: 1.5
     fuse_strong_buy: 2.5
     fuse_sell: -1.5
     fuse_strong_sell: -2.5
+    
+    # 分场景阈值（按市场regime动态调整）
+    regime_thresholds:
+      active:
+        fuse_buy: 1.3
+        fuse_strong_buy: 2.3
+        fuse_sell: -1.3
+        fuse_strong_sell: -2.3
+      normal:
+        fuse_buy: 1.5
+        fuse_strong_buy: 2.5
+        fuse_sell: -1.5
+        fuse_strong_sell: -2.5
+      quiet:
+        fuse_buy: 1.7
+        fuse_strong_buy: 2.7
+        fuse_sell: -1.7
+        fuse_strong_sell: -2.7
   
-  # 一致性阈值
+  # 一致性阈值 - 统一配置
   consistency:
-    min_consistency: 0.3
-    strong_min_consistency: 0.7
+    min_consistency: 0.45
+    strong_min_consistency: 0.75
+    
+    # 分场景一致性阈值
+    regime_consistency:
+      active:
+        min_consistency: 0.45
+        strong_min_consistency: 0.75
+      normal:
+        min_consistency: 0.50
+        strong_min_consistency: 0.80
+      quiet:
+        min_consistency: 0.55
+        strong_min_consistency: 0.85
   
-  # 数据处理
+  # 数据处理 - 进攻版配置
   data_processing:
-    z_clip: 5.0
-    max_lag: 0.300  # 最大时间差(秒)
-    warmup_samples: 30  # 暖启动样本数
+    z_clip: 3.0            # 从4.0收紧到3.0，避免极端点放大权重
+    max_lag: 0.6          # 从0.25放宽到0.6，减少频繁单因子降级
+    warmup_samples: 20    # 30 → 20 (平衡快速点火与数据质量)
   
-  # 去噪参数
+  # 去噪参数 - 均衡版配置（提高稳定性）
   denoising:
-    hysteresis_exit: 1.2
-    cooldown_secs: 1.0
-    min_duration: 2  # 最小持续次数（暂未启用）
+    hysteresis_exit: 1.0  # 从0.2提升到1.0，减少抖动进出
+    cooldown_secs: 1.2    # 从0.1提升到1.2，提高冷却力度
+    min_consecutive: 2    # 从1提升到2，要求连续确认
+    min_duration: 1       # 保持1 (最低持续门槛)
   
   # 性能配置
   performance:
@@ -204,10 +280,11 @@ fusion_metrics:
     queue_size: 1000
   
   # 监控配置已合并到主monitoring部分
-    
-    alerts:
-      consistency_threshold: 0.2  # 一致性告警阈值
-      lag_threshold: 0.5  # 滞后告警阈值
+  
+  # 告警配置
+  alerts:
+    consistency_threshold: 0.2  # 一致性告警阈值
+    lag_threshold: 0.5  # 滞后告警阈值
   
   # 热更新配置
   hot_reload:
@@ -263,13 +340,7 @@ data_source:
   
   # WebSocket配置
   websocket:
-    # 币安官方推荐配置
-    timeout: 30
-    reconnect_interval: 5
-    max_reconnect_attempts: 0
-    ping_interval: 20  # 官方标准：20秒PING间隔
-    
-    # 详细连接配置
+    # 连接配置
     connection:
       # 连接超时（秒）
       timeout: 30
@@ -277,7 +348,7 @@ data_source:
       reconnect_interval: 5
       # 最大重连次数（0表示无限重连）
       max_reconnect_attempts: 0
-      # Ping间隔（秒）
+      # Ping间隔（秒）- 官方标准：20秒PING间隔
       ping_interval: 20
       # 心跳超时（秒）- 币安官方要求：1分钟内回复PONG
       heartbeat_timeout: 60
@@ -346,36 +417,33 @@ components:
     # 描述
     description: "累积成交量差计算和Z-score标准化"
     
-    # CVD计算参数 - Phase A1优化后参数
+    # CVD计算参数（最终生效配置）
     z_window: 300
     ema_alpha: 0.2
     use_tick_rule: true
     warmup_min: 5
     
-    # Phase A1最优参数组合 (2025-10-21)
-    z_mode: "delta"                    # Delta-Z模式
-    scale_mode: "hybrid"               # 混合尺度模式
-    mad_multiplier: 1.8               # MAD乘数 (优化后)
-    scale_fast_weight: 0.20           # 快速权重 (优化后)
-    half_life_trades: 600             # 半衰期 (优化后)
-    winsor_limit: 8.0                 # Winsor截断限制
-    freeze_min: 50
-    stale_threshold_ms: 5000
+    # Z-score参数
+    z_mode: "delta"
     
-    # 空窗后冻结配置
-    soft_freeze_ms: 4000
-    hard_freeze_ms: 5000
-    
-    # Step 1 稳健尺度地板配置
+    # 尺度配置（Step 1稳健尺度地板）
     scale_mode: "ewma"
     ewma_fast_hl: 80
     mad_window_trades: 300
     mad_scale_factor: 1.4826
-    
-    # Step 1 微调配置
     scale_fast_weight: 0.30
     scale_slow_weight: 0.70
     mad_multiplier: 1.30
+    
+    # 窗口和半衰期
+    half_life_trades: 600
+    winsor_limit: 8.0
+    
+    # 冻结配置
+    freeze_min: 25
+    stale_threshold_ms: 5000
+    soft_freeze_ms: 4000
+    hard_freeze_ms: 5000
     post_stale_freeze: 2
   
   # OFI (Order Flow Imbalance) 组件
@@ -574,64 +642,6 @@ monitoring:
     path: "/metrics"
 
 # ============================================================================
-# 背离检测配置
-# ============================================================================
-divergence_detection:
-  # 是否启用背离检测
-  enabled: true
-  
-  # 枢轴检测参数
-  pivot_detection:
-    swing_L: 12                # 枢轴检测窗口长度
-    ema_k: 5                   # EMA平滑参数
-  
-  # 强度阈值
-  thresholds:
-    z_hi: 1.5                  # 高强度阈值
-    z_mid: 0.7                 # 中等强度阈值
-  
-  # 去噪参数
-  denoising:
-    min_separation: 6          # 最小枢轴间距
-    cooldown_secs: 1.0         # 冷却时间
-    warmup_min: 100            # 暖启动最小样本数
-    max_lag: 0.300             # 最大滞后时间
-  
-  # 融合参数
-  fusion:
-    use_fusion: true           # 是否使用融合指标
-  
-  # 性能配置
-  performance:
-    max_events_per_second: 100
-    batch_size: 10
-    queue_size: 1000
-  
-  # 监控配置
-  monitoring:
-    prometheus:
-      port: 8004
-      path: "/metrics"
-      scrape_interval: "5s"
-    
-    alerts:
-      enabled: true
-      rules:
-        - name: "divergence_detection_failure"
-          expr: "increase(divergence_events_total[5m]) == 0"
-          for: "10m"
-          severity: "warning"
-          summary: "背离检测模块无事件产生"
-  
-  # 热更新配置
-  hot_reload:
-    enabled: true
-    watch_file: true
-    reload_delay: 1.0
-    backup_config: true
-    log_changes: true
-
-# ============================================================================
 # 策略模式管理器配置
 # ============================================================================
 strategy_mode:
@@ -662,18 +672,78 @@ strategy_mode:
           timezone: "Asia/Hong_Kong"
       wrap_midnight: true
     
-    # 市场触发器
+    # 市场触发器 - 二阶段准入策略
     market:
       enabled: true
       window_secs: 60
-      min_trades_per_min: 500
-      min_quote_updates_per_sec: 100
-      max_spread_bps: 5
-      min_volatility_bps: 10
-      min_volume_usd: 1000000
+      # 第一阶段：基础准入门槛（按数据密度重标化）
+      min_trades_per_min: 20           # 50 → 20 (按73条/分钟数据密度重标化)
+      min_quote_updates_per_sec: 5    # 10 → 5 (按实际数据密度重标化)
+      max_spread_bps: 15              # 12 → 15 (进一步放宽点差要求)
+      min_volatility_bps: 0.5         # 1 → 0.5 (进一步降低波动要求)
+      min_volume_usd: 20000           # 50000 → 20000 (按数据密度重标化)
       use_median: true
       winsorize_percentile: 95
+      
+      # 第二阶段：质量过滤门槛（按场景差异化，重标化）
+      quality_filters:
+        active:
+          min_trades_per_min: 40      # Active模式：按数据密度重标化
+          min_quote_updates_per_sec: 10
+          max_spread_bps: 10
+          min_volatility_bps: 1.0
+          min_volume_usd: 50000
+        normal:
+          min_trades_per_min: 30      # Normal模式：按数据密度重标化
+          min_quote_updates_per_sec: 8
+          max_spread_bps: 12
+          min_volatility_bps: 0.8
+          min_volume_usd: 30000
+        quiet:
+          min_trades_per_min: 20      # Quiet模式：按数据密度重标化
+          min_quote_updates_per_sec: 5
+          max_spread_bps: 15
+          min_volatility_bps: 0.5
+          min_volume_usd: 20000
   
+  # === gating ===
+  weak_signal_threshold: 0.12   # 弱信号门槛（从0.05提升到0.12，提高确认率）
+
+  # === scenario thresholds (2x2) ===
+  scenario_parameters:
+    A_H:
+      Z_HI_LONG: 2.5
+      Z_HI_SHORT: -2.5
+      Z_MID: 1.5
+      TP_BPS: 25
+      SL_BPS: 12
+      min_hold_time_sec: 30      # 保守持仓时间，避免高频滑点/手续费
+      consistency_min: 0.45      # 与融合器对齐
+    A_L:
+      Z_HI_LONG: 2.0
+      Z_HI_SHORT: -2.0
+      Z_MID: 1.2
+      TP_BPS: 18
+      SL_BPS: 10
+      min_hold_time_sec: 20      # 保守持仓时间
+      consistency_min: 0.40      # 与融合器对齐
+    Q_H:
+      Z_HI_LONG: 1.8
+      Z_HI_SHORT: -1.8
+      Z_MID: 1.0
+      TP_BPS: 15
+      SL_BPS: 8
+      min_hold_time_sec: 15      # 保守持仓时间
+      consistency_min: 0.55      # Quiet场景要求更高一致性
+    Q_L:
+      Z_HI_LONG: 1.5
+      Z_HI_SHORT: -1.5
+      Z_MID: 0.8
+      TP_BPS: 12
+      SL_BPS: 6
+      min_hold_time_sec: 10      # 保守持仓时间
+      consistency_min: 0.50      # Quiet场景要求更高一致性
+
   # 特性开关
   features:
     dynamic_mode_enabled: true
@@ -1296,17 +1366,19 @@ data_harvest:
 # ============================================================================
 # 策略模式与差异化配置（数字资产市场）
 # ============================================================================
+# 注意：此配置已废弃，请使用 strategy_mode 配置
+# 保留此配置仅作为风控参数参考
 strategy:
   name: "ofi_cvd"
   
   # 模式选择: auto（自动切换）| active（固定活跃）| quiet（固定安静）
   mode: "auto"
   
-  # 迟滞与去抖配置
+  # 迟滞与去抖配置 - 进攻版设置（减少保守性）
   hysteresis:
     window_secs: 60           # 评估窗口长度（秒）
-    min_active_windows: 3     # 连续满足活跃判定的窗口数，才切到 active
-    min_quiet_windows: 6      # 连续不满足+非活跃时段的窗口数，才回到 quiet
+    min_active_windows: 2     # 3 → 2 (减少active确认窗口)
+    min_quiet_windows: 4      # 6 → 4 (减少quiet确认窗口)
   
   # 触发器配置
   triggers:
@@ -1324,16 +1396,16 @@ strategy:
         - "21:00-02:00"                # 欧美高峰（跨午夜，最重要）
         - "06:00-08:00"                # 美洲夜盘尾盘
     
-    # 市场活跃度触发器（针对数字资产市场优化）
+    # 市场活跃度触发器 - 进攻版配置（扩大场景覆盖）
     market:
       enabled: true
       window_secs: 60                  # 滑动窗口长度
-      min_trades_per_min: 500          # 最小成交笔数/分钟（数字资产高频）
-      min_quote_updates_per_sec: 100   # 最小报价更新/秒（订单簿更新频繁）
-      max_spread_bps: 5                # 最大点差（基点，流动性好时点差小）
-      min_volatility_bps: 10           # 最小波动率（基点，数字资产波动性高）
-      min_volume_usd: 1000000          # 最小成交量（美元，确保流动性充足）
-      winsorize_percentile: 95         # 尖峰过滤（P95截断）
+      min_trades_per_min: 80           # 从150降至80，校正入场时段
+      min_quote_updates_per_sec: 20    # 从40降至20，放宽报价更新要求
+      max_spread_bps: 5                # 保持5 (点差要求合理)
+      min_volatility_bps: 2            # 从4降至2，放宽波动要求
+      min_volume_usd: 100000           # 从200000降至100000，放宽成交量要求
+      winsorize_percentile: 95         # 保持95 (尖峰过滤合理)
       use_median: true                 # 使用中位数替代平均值（稳健估计）
   
   # 分模式参数配置
@@ -1378,6 +1450,31 @@ strategy:
       quiet:
         position_limit: 0.1            # 极小的仓位（避免冲击）
         order_rate_limit_per_min: 20   # 极低的下单频率
+      
+      # 风险管理策略（新增）
+      stop_loss:
+        enabled: true
+        # 对称止损策略
+        symmetric_stop_loss_bps: 20     # 对称止损：20bps
+        # 分级止盈策略
+        take_profit_levels:
+          level1:
+            profit_bps: 10              # 第一级止盈：10bps
+            close_ratio: 0.3            # 平仓30%
+          level2:
+            profit_bps: 20              # 第二级止盈：20bps
+            close_ratio: 0.5            # 平仓50%
+          level3:
+            profit_bps: 40              # 第三级止盈：40bps
+            close_ratio: 1.0            # 全部平仓
+        # 时间止损
+        time_stop_loss_secs: 300       # 5分钟时间止损
+        # 动态止损（基于波动率）
+        dynamic_stop_loss:
+          enabled: true
+          volatility_multiplier: 2.0    # 波动率倍数
+          min_stop_loss_bps: 10        # 最小止损
+          max_stop_loss_bps: 50        # 最大止损
     
     # 性能参数
     performance:
@@ -1393,7 +1490,7 @@ strategy:
 # ============================================================================
 features:
   # 是否启用新配置系统（本配置文件）
-  use_system_config: false  # 默认false，需要明确启用
+  use_system_config: true  # 已启用
   
   # 是否启用详细日志
   verbose_logging: false
