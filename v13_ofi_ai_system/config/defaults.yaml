@@ -1,0 +1,176 @@
+# --- 全局统一基线配置（可复现、便于对比） ---
+# 配置分层：Global → Profile → Regime → Symbol override
+# 冻结窗口：2周或直到每个regime ≥24h稳定数据达标
+
+ofi:
+  profiles:
+    offline_eval:
+      z_clip: null          # 禁用裁剪，便于评估真实尾部
+      winsor_k_mad: 3.0
+      std_floor: 1e-7
+      regimes:
+        high_liquidity:
+          active: { z_window: 80,  ema_alpha: 0.30 }
+          quiet:  { z_window: 120, ema_alpha: 0.25 }
+        low_liquidity:
+          active: { z_window: 120, ema_alpha: 0.20 }
+          quiet:  { z_window: 180, ema_alpha: 0.20 }
+    online_prod:
+      z_clip: 3.0           # 线上温和裁剪，抗噪
+      winsor_k_mad: 3.0
+      std_floor: 1e-7
+      regimes:
+        high_liquidity:
+          active: { z_window: 80,  ema_alpha: 0.30 }
+          quiet:  { z_window: 120, ema_alpha: 0.25 }
+        low_liquidity:
+          active: { z_window: 120, ema_alpha: 0.20 }
+          quiet:  { z_window: 180, ema_alpha: 0.20 }
+  
+  guardrails:
+    p_gt2_range: [0.01, 0.08]    # P(|z|>2)目标区间
+    p_gt3_max: 0.015             # P(|z|>3)上限
+    rollback_minutes: 60         # 越界持续60分钟后触发调整
+    clip_adjust_step: 0.5        # 仅在越界时小步调整
+    min_z_clip: 2.5              # z_clip下限
+    max_z_clip: null             # z_clip上限（null=禁用）
+  
+  symbol_overrides: {}           # 暂不启用，等监控给出证据再加
+
+# 流动性分类（用于regime选择）
+symbol_classes:
+  high:   # BTC/ETH/BNB/SOL - 高流动性
+    liquidity: high
+  low:    # XRP/DOGE/ADA - 低流动性  
+    liquidity: low
+
+symbols:
+  BTCUSDT: { class: high }
+  ETHUSDT: { class: high }
+  BNBUSDT: { class: high }
+  SOLUSDT: { class: high }
+  XRPUSDT: { class: low }
+  DOGEUSDT: { class: low }
+  ADAUSDT: { class: low }
+
+# --- Fusion metrics ---
+fusion_metrics:
+  weights: { w_ofi: 0.6, w_cvd: 0.4 }
+  thresholds:
+    fuse_buy: 2.0
+    fuse_strong_buy: 3.0
+    fuse_sell: -2.0
+    fuse_strong_sell: -3.0
+    regime_thresholds:
+      active:   { fuse_buy: 1.1, fuse_sell: -1.1 }
+      normal:   { fuse_buy: 1.2, fuse_sell: -1.2 }
+      quiet:    { fuse_buy: 1.4, fuse_sell: -1.4 }
+  consistency:
+    min_consistency: 0.60
+    strong_min_consistency: 0.80
+    regime_consistency:
+      active: { min_consistency: 0.15, strong_min_consistency: 0.5 }
+      quiet:  { min_consistency: 0.25, strong_min_consistency: 0.65 }
+  data_processing:
+    # 使用全局基线配置，不再单独设置z_clip
+    max_lag: 0.25
+    warmup_samples: 20
+  denoising:
+    hysteresis_exit: 0.6
+    cooldown_secs: 0.6
+    min_duration: 1
+
+# --- 会话化与稳健化守护（全局生效） ---
+ofi_session:
+  reset_on_gap_ms: 2000
+  reset_on_session_change: true
+  per_symbol_window: true
+
+ofi_robust:
+  std_floor: 1e-7                # 降低标准差下限，避免分母抬高
+  winsorize_ofi_delta_mad_k: 3.0 # 放宽MAD软截，避免正常尾部被截掉
+
+# --- Components (OFI/CVD) ---
+components:
+  ofi:
+    # === 使用全局基线配置，不再单独设置参数 ===
+    levels: 5
+    weights: [0.4, 0.25, 0.2, 0.1, 0.05]
+  cvd:
+    z_window: 150
+    ema_alpha: 0.2
+    use_tick_rule: true
+    warmup_min: 3
+    z_mode: level
+    half_life_trades: 300
+    winsor_limit: 8.0
+    freeze_min: 50
+    stale_threshold_ms: 5000
+    soft_freeze_ms: 4000
+    hard_freeze_ms: 5000
+    scale_mode: ewma
+    ewma_fast_hl: 80
+    mad_window_trades: 300
+    mad_scale_factor: 1.4826
+    scale_fast_weight: 0.30
+    scale_slow_weight: 0.70
+    mad_multiplier: 1.30
+    post_stale_freeze: 2
+
+# 兼容 RealOFICalculator 的 binance 回退字段
+binance:
+  ofi:
+    levels: 5
+    weights: [0.4, 0.25, 0.2, 0.1, 0.05]
+    window_size: 150
+
+# --- Divergence detection ---
+divergence_detection:
+  default:
+    swing_L: 12
+    ema_k: 5
+    z_hi: 1.5
+    z_mid: 0.7
+    min_separation: 6
+    cooldown_secs: 1.0
+    warmup_min: 100
+    max_lag: 0.30
+    use_fusion: true
+
+# --- Strategy (Mode Manager) ---
+strategy:
+  mode: auto
+  hysteresis:
+    window_secs: 60
+    min_active_windows: 2
+    min_quiet_windows: 4
+  triggers:
+    schedule:
+      enabled: true
+      timezone: Asia/Hong_Kong
+      calendar: CRYPTO
+      enabled_weekdays: [Mon, Tue, Wed, Thu, Fri, Sat, Sun]
+      holidays: []
+      active_windows:
+        - { start: "00:00", end: "23:59", timezone: Asia/Hong_Kong }
+      wrap_midnight: true
+    market:
+      enabled: true
+      window_secs: 60
+      min_trades_per_min: 150
+      min_quote_updates_per_sec: 40
+      max_spread_bps: 5
+      min_volatility_bps: 4
+      min_volume_usd: 200000
+      use_median: true
+      winsorize_percentile: 95
+  features:
+    dynamic_mode_enabled: true
+    dry_run: false
+
+# --- Scenario parameters (for CoreAlgorithm) ---
+scenario_parameters:
+  A_H: { Z_HI_LONG: 2.5, Z_HI_SHORT: 2.5, Z_MID: 0.5, TP_BPS: 12, SL_BPS: 9, min_hold_time_sec: 45, consistency_threshold: 0.55 }
+  A_L: { Z_HI_LONG: 2.7, Z_HI_SHORT: 2.7, Z_MID: 0.6, TP_BPS: 10, SL_BPS: 8, min_hold_time_sec: 60, consistency_threshold: 0.60 }
+  Q_H: { Z_HI_LONG: 3.0, Z_HI_SHORT: 3.0, Z_MID: 0.8, TP_BPS: 8,  SL_BPS: 7, min_hold_time_sec: 75, consistency_threshold: 0.65 }
+  Q_L: { Z_HI_LONG: 3.2, Z_HI_SHORT: 3.2, Z_MID: 0.9, TP_BPS: 6,  SL_BPS: 6, min_hold_time_sec: 90, consistency_threshold: 0.70 }
