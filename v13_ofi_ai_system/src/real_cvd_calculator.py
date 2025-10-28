@@ -57,10 +57,10 @@ class CVDConfig:
     auto_flip_threshold: float = 0.04  # AUC提升阈值，超过此值自动翻转
     
     # P1.1 Delta-Z配置
-    z_mode: str = "level"         # Z-score模式: "level"(旧版) | "delta"(新版)
+    z_mode: str = "delta"         # Z-score模式: "level"(旧版) | "delta"(新版) - 优化: 改为delta
     half_life_trades: int = 300   # Delta-Z半衰期（笔数）
-    winsor_limit: float = 8.0     # Z-score截断阈值
-    freeze_min: int = 25          # Z-score最小样本数（降低冻结门槛）
+    winsor_limit: float = 2.8     # Z-score截断阈值 - 优化: 8.0 → 2.8
+    freeze_min: int = 20          # Z-score最小样本数 - 优化: 25 → 20
     stale_threshold_ms: int = 5000 # Stale冻结阈值（毫秒）
     
     # 空窗后冻结配置（事件时间间隔）
@@ -68,15 +68,15 @@ class CVDConfig:
     hard_freeze_ms: int = 5000    # 硬冻结阈值（>5s，首2笔冻结）
     
     # Step 1 稳健尺度地板配置
-    scale_mode: str = "ewma"      # 尺度模式: "ewma" | "hybrid"
+    scale_mode: str = "hybrid"      # 尺度模式: "ewma" | "hybrid" - 优化: 改为hybrid（Quiet档）
     ewma_fast_hl: int = 80        # 快EWMA半衰期（笔数）
-    mad_window_trades: int = 300  # MAD窗口大小（笔数）
+    mad_window_trades: int = 200  # MAD窗口大小（笔数） - 优化: 300 → 200
     mad_scale_factor: float = 1.4826 # MAD还原为σ的一致性系数
     
     # Step 1 微调配置
     scale_fast_weight: float = 0.30  # 快EWMA权重 (fast:slow = 0.30:0.70)
     scale_slow_weight: float = 0.70  # 慢EWMA权重
-    mad_multiplier: float = 1.30     # MAD地板安全系数
+    mad_multiplier: float = 1.43     # MAD地板安全系数 - 优化: 1.30 → 1.43
     post_stale_freeze: int = 2       # 空窗后首N笔冻结
 
 class RealCVDCalculator:

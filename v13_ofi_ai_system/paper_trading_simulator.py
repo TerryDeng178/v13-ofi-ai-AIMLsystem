@@ -8,13 +8,18 @@ import os
 import sys
 import time
 import json
-import asyncio
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 from collections import deque
+
+# logger兜底：类方法里用到logger.debug，若以模块形式被其它脚本调用，可能没有全局logger
+import logging
+logger = globals().get("logger", logging.getLogger(__name__))
+if not logger.handlers:
+    logger.addHandler(logging.NullHandler())
 
 # 快速自检：确保stderr未被提前关闭
 assert not getattr(sys.stderr, "closed", False), "stderr 已被提前关闭！"
@@ -27,13 +32,13 @@ sys.path.insert(0, str(PROJECT_ROOT / "core"))  # core 包
 sys.path.insert(0, str(PROJECT_ROOT / "src"))   # src 包
 
 from src.utils.strategy_mode_manager import StrategyModeManager
-from src.utils.config_loader import load_config
 from core_algo import CoreAlgorithm, SignalConfig
+from config.unified_config_loader import UnifiedConfigLoader
 
 class PaperTradingSimulator:
     """纸上交易模拟器"""
     
-    def __init__(self, config_path: str = None, symbol: str = "BTCUSDT"):
+    def __init__(self, symbol: str = "BTCUSDT", config_path: str = None):
         """初始化模拟器"""
         self.config_path = config_path or str(PROJECT_ROOT / "reports/scenario_opt/strategy_params_fusion_clean.yaml")
         self.symbol = symbol
@@ -45,11 +50,7 @@ class PaperTradingSimulator:
             'Q_L': {'trades': 0, 'pnl': 0.0, 'win_rate': 0.0, 'sharpe': 0.0},
             'A_L': {'trades': 0, 'pnl': 0.0, 'win_rate': 0.0, 'sharpe': 0.0},
             'A_H': {'trades': 0, 'pnl': 0.0, 'win_rate': 0.0, 'sharpe': 0.0},
-            'Q_H': {'trades': 0, 'pnl': 0.0, 'win_rate': 0.0, 'sharpe': 0.0},
-            'Active_High': {'trades': 0, 'pnl': 0.0, 'win_rate': 0.0, 'sharpe': 0.0},  # 添加新场景
-            'Active_Low': {'trades': 0, 'pnl': 0.0, 'win_rate': 0.0, 'sharpe': 0.0},
-            'Quiet_High': {'trades': 0, 'pnl': 0.0, 'win_rate': 0.0, 'sharpe': 0.0},
-            'Quiet_Low': {'trades': 0, 'pnl': 0.0, 'win_rate': 0.0, 'sharpe': 0.0}
+            'Q_H': {'trades': 0, 'pnl': 0.0, 'win_rate': 0.0, 'sharpe': 0.0}
         }
         self.log_entries = []  # 结构化日志
         self.cost_bps = 3.0  # 3bps交易成本
@@ -81,7 +82,8 @@ class PaperTradingSimulator:
         # 升级版反转闸门参数
         self.last_mid_price = {}  # {symbol: mid_price}
         self.min_move_ticks = 2  # 最小移动tick数
-        self.tick_size = 0.01  # BTC tick size
+        # tick size按品种配置
+        self.tick_size = self._get_tick_size_by_symbol(symbol)
         self.max_spread_bps = {  # 最大点差限制
             "Q_H": 5.0, "A_H": 3.0, "A_L": 2.0, "Q_L": 1.5
         }
@@ -102,51 +104,54 @@ class PaperTradingSimulator:
         # 信号计数（用于A/B测试）
         self.signal_count = 0
         self.confirmed_count = 0
+        # 是否允许在Core未confirm时，以场景阈值作为入场备选（默认关闭，保持单一口径）
+        self.allow_scenario_entry_fallback = False
         
     def initialize(self):
         """初始化模拟器"""
-        print("[初始化] 初始化纸上交易模拟器...")
+        print("[INIT] Initializing paper trading simulator...")
         
         try:
-            # 加载配置
-            config = load_config()
-            print("成功 配置加载成功")
-            
+            # 加载统一配置
+
+            cfg = UnifiedConfigLoader(base_dir=os.environ.get("CONFIG_DIR", "config"))
+            print("SUCCESS Config loaded successfully")
             # 初始化核心算法
             signal_config = SignalConfig()
-            self.core_algo = CoreAlgorithm(self.symbol, signal_config, config_loader=config)
-            print("成功 核心算法初始化成功")
+            self.core_algo = CoreAlgorithm(self.symbol, signal_config, config_loader=cfg)
+            print("SUCCESS Core algorithm initialized successfully")
             
-            # 初始化StrategyModeManager
-            self.manager = StrategyModeManager(config_loader=None)
-            print("成功 StrategyModeManager初始化成功")
+            # 初始化StrategyModeManager（统一配置来源）
+            self.manager = StrategyModeManager(config_loader=cfg)
+            print("SUCCESS StrategyModeManager initialized successfully")
             
             # 加载场景参数
             success = self.manager.load_scenario_params(self.config_path)
             if not success:
                 raise Exception("场景参数加载失败")
-            print("成功 场景参数加载成功")
+            print("SUCCESS Scenario parameters loaded successfully")
             
-            print("成功 纸上交易模拟器初始化完成")
-            print(f"   交易对: {self.symbol}")
-            print(f"   场景参数配置: {self.config_path}")
+            print("SUCCESS Paper trading simulator initialization completed")
+            print(f"   Symbol: {self.symbol}")
+            print(f"   Scenario config: {self.config_path}")
             
         except Exception as e:
-            print(f"[失败] 初始化失败: {e}")
+            print(f"[FAILED] Initialization failed: {e}")
             raise
         
     def simulate_trade(self, symbol: str, price: float, fusion_score: float, 
                       scenario_2x2: str, timestamp: datetime) -> Dict[str, Any]:
         """模拟单笔交易"""
         
-        # 获取场景参数（修复参数键名）
+        # 获取场景参数（统一场景命名）
+        scn = self._norm_scn(scenario_2x2)
         try:
             if fusion_score > 0:  # 多头信号
-                params = self.manager.get_params_for_scenario(scenario_2x2, 'long')
+                params = self.manager.get_params_for_scenario(scn, 'long')
                 side = 'long'
                 entry_threshold = params.get('Z_HI_LONG', params.get('Z_HI', 2.0))  # 兼容不同键名
             else:  # 空头信号
-                params = self.manager.get_params_for_scenario(scenario_2x2, 'short')
+                params = self.manager.get_params_for_scenario(scn, 'short')
                 side = 'short'
                 entry_threshold = params.get('Z_HI_SHORT', params.get('Z_HI', 2.0))  # 兼容不同键名
         except Exception as e:
@@ -159,8 +164,13 @@ class PaperTradingSimulator:
         # 信号计数（用于A/B测试）
         self.signal_count += 1
         
-        # 检查是否触发入场
-        if abs(fusion_score) >= entry_threshold:
+        # 统一口径：使用CoreAlgorithm的确认机制而非本地SCENE_GATE
+        # 如果fusion_score已经通过CoreAlgorithm的确认，直接使用
+        # 否则使用场景化阈值作为备选
+        use_core_confirm = bool(getattr(self, "_last_signal", None) and self._last_signal.confirm)
+        allow_fallback = self.allow_scenario_entry_fallback and abs(fusion_score) >= entry_threshold
+        
+        if use_core_confirm or allow_fallback:
             self.confirmed_count += 1
             # 检查是否已有持仓
             if symbol in self.positions:
@@ -170,11 +180,11 @@ class PaperTradingSimulator:
                     # 检查反转闸门和翻转次数限制（使用price作为mid_price）
                     if not self.can_reverse(symbol, fusion_score, timestamp, scenario_2x2, 
                                           best_bid=price*0.999, best_ask=price*1.001, mid_price=price):
-                        print(f"[BLOCK] 反转闸门阻止: {symbol}, 冷却中或信号不足")
+                        print(f"[BLOCK] Reverse gate blocked: {symbol}, cooling or insufficient signal")
                         return None
                     
                     if self._get_flip_count(symbol, timestamp) >= 3:
-                        print(f"[BLOCK] 翻转次数超限: {symbol}, 当前小时翻转次数已达上限")
+                        print(f"[BLOCK] Flip count exceeded: {symbol}, hourly flip limit reached")
                         return None
                     
                     # 反向仓位，先平仓
@@ -194,7 +204,7 @@ class PaperTradingSimulator:
                 'entry_price': price,
                 'entry_time': timestamp,
                 'fusion_score': fusion_score,
-                'scenario_2x2': scenario_2x2,
+                'scenario_2x2': scn,  # 统一用短名落账
                 'params': params,
                 'status': 'open'
             }
@@ -212,6 +222,12 @@ class PaperTradingSimulator:
             
             print(f"[趋势] {scenario_2x2} {side} 入场: {symbol} @ {price:.4f}, fusion={fusion_score:.3f}")
             
+            # 入场后也记录一次方向，强化反转多数表决的样本密度（避免双计数）
+            if symbol not in self.signal_history:
+                self.signal_history[symbol] = deque(maxlen=3)
+                # 冷启动才补一次，避免双计数
+                self.signal_history[symbol].append(1 if fusion_score > 0 else -1)
+            
             # 记录结构化日志
             self.log_entries.append({
                 'timestamp': timestamp.isoformat(),
@@ -220,13 +236,44 @@ class PaperTradingSimulator:
                 'side': side,
                 'price': price,
                 'fusion_score': fusion_score,
-                'scenario_2x2': scenario_2x2,
-                'config_version': self.manager.get_scenario_stats().get('version', 'unknown') if self.manager else 'unknown'
+                'scenario_2x2': scn,
+                'config_version': self._scenario_version()
             })
             
             return trade
         
         return None
+    
+    def _scenario_version(self) -> str:
+        """安全获取场景参数版本，避免缺方法时报错"""
+        try:
+            if self.manager and hasattr(self.manager, "get_scenario_stats"):
+                stats = self.manager.get_scenario_stats()
+                if isinstance(stats, dict):
+                    return stats.get("version", "unknown")
+        except Exception:
+            pass
+        return "unknown"
+    
+    def _get_tick_size_by_symbol(self, symbol: str) -> float:
+        """按品种配置tick size，避免最小位移闸门过松/过严"""
+        tick_sizes = {
+            'BTCUSDT': 0.01,   # BTC: 0.01 USDT
+            'ETHUSDT': 0.01,   # ETH: 0.01 USDT  
+            'ADAUSDT': 0.0001, # ADA: 0.0001 USDT
+            'SOLUSDT': 0.001,  # SOL: 0.001 USDT
+            'DOTUSDT': 0.001,  # DOT: 0.001 USDT
+            'LINKUSDT': 0.001, # LINK: 0.001 USDT
+            'MATICUSDT': 0.0001, # MATIC: 0.0001 USDT
+            'AVAXUSDT': 0.01,  # AVAX: 0.01 USDT
+        }
+        return tick_sizes.get(symbol.upper(), 0.01)  # 默认0.01
+    
+    def _norm_scn(self, s: str) -> str:
+        """统一场景命名：防止SCENE_GATE/参数表兜底到Q_L"""
+        m = {"Active_High":"A_H","Active_Low":"A_L","Quiet_High":"Q_H","Quiet_Low":"Q_L",
+             "A_H":"A_H","A_L":"A_L","Q_H":"Q_H","Q_L":"Q_L"}
+        return m.get(s, "Q_L")
     
     def _calibrate_thresholds(self, merged_df: pd.DataFrame, timestamp: datetime):
         """升级版动态阈值校准：Q90阈值 + 确认率目标微调"""
@@ -245,20 +292,14 @@ class PaperTradingSimulator:
             # 计算当前确认率
             current_confirm_rate = self._calculate_confirm_rate(recent_data)
             
-            # 更新场景门控参数
+            # 场景阈值校准一致性优化：仅校准退出阈值，避免与CoreAlgorithm冲突
+            # 既然已采用CoreAlgorithm的sig.confirm为准，不再回写进入阈值
+            # 建议：若要更纯粹，可将结果只记录到settings.json而不回写SCENE_GATE，避免与Core再次产生隐性耦合
             for scenario in self.SCENE_GATE:
                 if q90 > 0:
-                    # 基于确认率目标微调（20%-35%）
-                    if current_confirm_rate < 0.20:  # 确认率过低，降低阈值
-                        adjustment = -0.1
-                    elif current_confirm_rate > 0.35:  # 确认率过高，提高阈值
-                        adjustment = 0.1
-                    else:
-                        adjustment = 0
-                    
-                    # 动态调整进入阈值
-                    new_enter = max(self.SCENE_GATE[scenario]["enter"] + adjustment, q90 * 0.8)
-                    self.SCENE_GATE[scenario]["enter"] = min(new_enter, 3.0)  # 上限3.0
+                    # 仅调整退出阈值，保持与CoreAlgorithm的一致性
+                    new_exit = max(self.SCENE_GATE[scenario]["exit"] * 0.8, q90 * 0.3)
+                    self.SCENE_GATE[scenario]["exit"] = min(new_exit, 1.0)  # 上限1.0
                     
             print(f"[初始化] 动态阈值校准完成，Q90={q90:.3f}, 确认率={current_confirm_rate:.1%}")
             
@@ -286,7 +327,8 @@ class PaperTradingSimulator:
         
         return confirmed_signals / total_signals if total_signals > 0 else 0.0
     
-    def _check_weak_signal_region(self, symbol: str, current_price: float, timestamp: datetime):
+    def _check_weak_signal_region(self, symbol: str, current_price: float, timestamp: datetime, 
+                                 current_volatility: float = None, current_activity: float = None):
         """检查弱信号区域：波动<0.12%/h 或 活跃<20分位"""
         try:
             # 如果未启用弱信号节流，直接返回False
@@ -296,24 +338,34 @@ class PaperTradingSimulator:
             # 获取最近1小时的价格数据
             cutoff_time = timestamp - timedelta(hours=1)
             
-            # 这里需要价格历史数据，简化实现
-            # 实际应该从数据源获取历史价格
-            hourly_volatility = 0.05  # 简化：假设5%小时波动率
-            activity_percentile = 30   # 简化：假设30分位活跃度
+            # 使用真实指标：从预计算的rv_60s和trades_1m数据
+            # 优化：接入真实指标，替换占位值
+            # 注意：这里需要传入当前行的数据，简化实现使用默认值
+            # 实际应维护1小时历史窗口计算分位数，并把阈值放入system.yaml
+            if current_volatility is not None and current_activity is not None:
+                # 启用A/B时接入真实列数据
+                vol_value = current_volatility
+                act_value = current_activity
+            else:
+                # TODO: 若要启用节流，请将当前行的真实 rv_60s / trades_1m 传参进来并赋值：
+                # current_volatility = float(row.get('rv_60s', 0.01))
+                # current_activity   = float(row.get('trades_1m', 60.0))
+                vol_value = 0.01
+                act_value = 60.0
             
-            # 弱信号条件：波动<阈值 或 活跃<阈值
-            is_weak_vol = hourly_volatility < self.weak_signal_volatility_threshold
-            is_weak_activity = activity_percentile < self.weak_signal_activity_threshold
+            # 弱信号条件：波动<阈值 或 活跃<阈值（使用真实指标）
+            is_weak_vol = vol_value < self.weak_signal_volatility_threshold
+            is_weak_activity = act_value < self.weak_signal_activity_threshold
             
             is_weak = is_weak_vol or is_weak_activity
             
             if is_weak:
-                print(f"🔍 弱信号区域检测: 波动={hourly_volatility:.3f}, 活跃={activity_percentile}, 弱信号={'是' if is_weak else '否'}")
+                logger.debug(f"WEAK_SIGNAL: Volatility={vol_value:.3f}, Activity={act_value:.1f}, Weak={'Yes' if is_weak else 'No'}")
             
             return is_weak
             
         except Exception as e:
-            print(f"[警告] 弱信号区域检测失败: {e}")
+            print(f"[WARNING] Weak signal detection failed: {e}")
             return False
     
     def calculate_adaptive_scenario_labels(self, symbol: str, current_time: datetime, 
@@ -379,7 +431,7 @@ class PaperTradingSimulator:
                 scenario = max(set(scenarios), key=scenarios.count)
             
             # 7. 记录场景分布统计
-            self._update_scenario_coverage(symbol, scenario, current_time)
+            self._update_scenario_coverage(symbol, self._norm_scn(scenario), current_time)
             
             return scenario
             
@@ -403,10 +455,10 @@ class PaperTradingSimulator:
             ofi_ic = self._calculate_ic(ofi_data, 'z_ofi', lookback_hours) if 'z_ofi' in ofi_data.columns else 0.0
             cvd_ic = self._calculate_ic(cvd_data, 'z_cvd', lookback_hours) if 'z_cvd' in cvd_data.columns else 0.0
             
-            # 1. 滚动IC→权重时加入收缩/裁剪
+            # 1. 滚动IC→权重时加入收缩/裁剪（修复：向0收缩而非0.5）
             lambda_shrink = 0.1  # 收缩参数
-            ofi_ic_shrunk = ofi_ic * (1 - lambda_shrink) + 0.5 * lambda_shrink
-            cvd_ic_shrunk = cvd_ic * (1 - lambda_shrink) + 0.5 * lambda_shrink
+            ofi_ic_shrunk = ofi_ic * (1 - lambda_shrink)  # 向0收缩，0.5不是"中性"
+            cvd_ic_shrunk = cvd_ic * (1 - lambda_shrink)
             
             # 权重归一化
             total_ic = max(ofi_ic_shrunk, 0) + max(cvd_ic_shrunk, 0)
@@ -484,7 +536,8 @@ class PaperTradingSimulator:
         if symbol not in self.last_flip_time:
             return True
         
-        gate = self.SCENE_GATE.get(scenario, self.SCENE_GATE["Q_L"])
+        scn = self._norm_scn(scenario)
+        gate = self.SCENE_GATE.get(scn, self.SCENE_GATE["Q_L"])
         time_since_flip = (timestamp - self.last_flip_time[symbol]).total_seconds()
         
         # 1. 分场景冷却时间检查
@@ -538,15 +591,18 @@ class PaperTradingSimulator:
         
         last_mid = self.last_mid_price[symbol]
         move_ticks = abs(current_mid - last_mid) / self.tick_size
-        return move_ticks >= self.min_move_ticks
+        ok = move_ticks >= self.min_move_ticks
+        if ok:
+            self.last_mid_price[symbol] = current_mid
+        return ok
     
     def _get_max_spread(self, scenario: str):
         """获取最大点差限制（bps）"""
-        return self.max_spread_bps.get(scenario, 3.0)
+        return self.max_spread_bps.get(self._norm_scn(scenario), 3.0)
     
     def _get_max_spread_price(self, scenario: str, mid: float) -> float:
         """获取最大点差限制（价格单位）"""
-        bps = self.max_spread_bps.get(scenario, 3.0)
+        bps = self.max_spread_bps.get(self._norm_scn(scenario), 3.0)
         return mid * bps / 10000.0
     
     def _check_reverse_frequency(self, symbol: str, timestamp: datetime):
@@ -628,15 +684,16 @@ class PaperTradingSimulator:
         if symbol not in self.scenario_coverage:
             self.scenario_coverage[symbol] = {}
         
-        if scenario not in self.scenario_coverage[symbol]:
-            self.scenario_coverage[symbol][scenario] = []
+        scn = self._norm_scn(scenario)
+        if scn not in self.scenario_coverage[symbol]:
+            self.scenario_coverage[symbol][scn] = []
         
-        self.scenario_coverage[symbol][scenario].append((timestamp, 1))
+        self.scenario_coverage[symbol][scn].append((timestamp, 1))
         
         # 清理过期数据
         cutoff_time = timestamp - timedelta(minutes=self.coverage_window)
-        self.scenario_coverage[symbol][scenario] = [
-            (ts, count) for ts, count in self.scenario_coverage[symbol][scenario]
+        self.scenario_coverage[symbol][scn] = [
+            (ts, count) for ts, count in self.scenario_coverage[symbol][scn]
             if ts >= cutoff_time
         ]
     
@@ -683,31 +740,31 @@ class PaperTradingSimulator:
         else:
             current_pnl_bps = (entry_price - price) / entry_price * 10000
         
-        # 1. 对称止损检查
-        stop_loss_bps = 20  # 从配置读取
-        if current_pnl_bps <= -stop_loss_bps:
+        # 1. 止损检查（沿用入场时计算出的 stop_loss）
+        if (trade['side'] == 'long' and price <= trade.get('stop_loss', -float('inf'))) or \
+           (trade['side'] == 'short' and price >= trade.get('stop_loss', float('inf'))):
             return self.close_position(symbol, price, timestamp, "stop_loss")
         
-        # 2. 分级止盈检查
-        if current_pnl_bps >= 10:  # 第一级止盈
-            if 'level1_closed' not in trade:
-                trade['level1_closed'] = True
-                # 部分平仓30%
-                return self.close_position(symbol, price, timestamp, "take_profit_level1")
-        elif current_pnl_bps >= 20:  # 第二级止盈
-            if 'level2_closed' not in trade:
-                trade['level2_closed'] = True
-                # 部分平仓50%
-                return self.close_position(symbol, price, timestamp, "take_profit_level2")
-        elif current_pnl_bps >= 40:  # 第三级止盈
+        # 2. 分级止盈检查（从高到低顺序，确保高级别能触发）
+        if current_pnl_bps >= 40:  # 第三级止盈（先判最高级）
             if 'level3_closed' not in trade:
                 trade['level3_closed'] = True
                 # 全部平仓
                 return self.close_position(symbol, price, timestamp, "take_profit_level3")
+        elif current_pnl_bps >= 20:  # 第二级
+            if 'level2_closed' not in trade:
+                trade['level2_closed'] = True
+                # 全平（当前实现为全平，非部分平仓）
+                return self.close_position(symbol, price, timestamp, "take_profit_level2")
+        elif current_pnl_bps >= 10:  # 第一级
+            if 'level1_closed' not in trade:
+                trade['level1_closed'] = True
+                # 全平（当前实现为全平，非部分平仓）
+                return self.close_position(symbol, price, timestamp, "take_profit_level1")
         
-        # 3. 时间止损检查
+        # 3. 时间止损检查（300s为兜底，无信号也会触发）
         time_elapsed = (timestamp - entry_time).total_seconds()
-        if time_elapsed >= 300:  # 5分钟时间止损
+        if time_elapsed >= 300:  # 5分钟时间止损（兜底逻辑）
             return self.close_position(symbol, price, timestamp, "time_stop_loss")
         
         return None
@@ -755,20 +812,21 @@ class PaperTradingSimulator:
             'exit_reason': reason,
             'scenario_2x2': scenario,
             'net_pnl_bps': net_pnl_bps,
-            'config_version': self.manager.get_scenario_stats().get('version', 'unknown') if self.manager else 'unknown'
+            'config_version': self._scenario_version()
         })
         
         return trade
     
     def check_exit_conditions(self, symbol: str, current_price: float, 
-                            current_fusion_score: float, timestamp: datetime) -> Optional[Dict[str, Any]]:
+                            current_fusion_score: float, timestamp: datetime,
+                            current_volatility: float = 0.01) -> Optional[Dict[str, Any]]:
         """检查离场条件"""
         
         if symbol not in self.positions:
             return None
         
         trade = self.positions[symbol]
-        scenario = trade['scenario_2x2']
+        scenario = self._norm_scn(trade['scenario_2x2'])
         
         # 获取场景参数
         try:
@@ -801,21 +859,25 @@ class PaperTradingSimulator:
         if not exit_reason and abs(current_fusion_score) <= gate["exit"]:
             exit_reason = 'scenario_exit'
         
-        # 升级版ATR移动止损（立改清单优化）
+        # 升级版ATR移动止损（以价格波动近似ATR）
         if not exit_reason:
             atr_multiplier = {
                 "Q_H": 2.2, "A_H": 2.0, "A_L": 1.6, "Q_L": 1.6
             }
-            
-            # 计算ATR（简化版，实际应使用真实ATR）
-            price_change = abs(current_price - trade['entry_price']) / trade['entry_price']
-            atr_stop = price_change * atr_multiplier.get(scenario, 2.0)
-            
-            if abs(current_fusion_score) <= atr_stop:
-                exit_reason = 'atr_stop'
+            # 用"入场价×(波动×倍数)"定义ATR价距，并按方向判断是否触发
+            atr_pct = max(current_volatility, 1e-4) * atr_multiplier.get(scenario, 2.0)
+            if trade['side'] == 'long':
+                atr_price = trade['entry_price'] * (1 - atr_pct)
+                if current_price <= atr_price:
+                    exit_reason = 'atr_stop'
+            else:
+                atr_price = trade['entry_price'] * (1 + atr_pct)
+                if current_price >= atr_price:
+                    exit_reason = 'atr_stop'
         
         # 升级版时间止盈/止损（立改清单优化）
         if not exit_reason:
+            # 时间止损：90/120s为有信号时的更严口径（与300s兜底逻辑区分）
             time_limits = {
                 "Q_H": 120, "A_H": 90, "A_L": 90, "Q_L": 120  # A场景90s、Q场景120s
             }
@@ -838,37 +900,8 @@ class PaperTradingSimulator:
                 exit_reason = 'timeout'
         
         if exit_reason:
-            # 计算PnL
-            if trade['side'] == 'long':
-                pnl_bps = (exit_price - trade['entry_price']) / trade['entry_price'] * 10000
-            else:
-                pnl_bps = (trade['entry_price'] - exit_price) / trade['entry_price'] * 10000
-            
-            # 扣除交易成本
-            cost_bps = 3.0  # 3bps交易成本
-            net_pnl_bps = pnl_bps - cost_bps
-            
-            # 更新交易记录
-            trade.update({
-                'exit_price': exit_price,
-                'exit_time': timestamp,
-                'exit_reason': exit_reason,
-                'pnl_bps': pnl_bps,
-                'net_pnl_bps': net_pnl_bps,
-                'status': 'closed'
-            })
-            
-            # 更新KPI
-            self.kpis[scenario]['trades'] += 1
-            self.kpis[scenario]['pnl'] += net_pnl_bps
-            
-            # 移除持仓
-            del self.positions[symbol]
-            
-            print(f"[离场] {scenario} {trade['side']} 离场: {symbol} @ {exit_price:.4f}, "
-                  f"PnL={net_pnl_bps:.2f}bps, 原因={exit_reason}")
-            
-            return trade
+            # 统一平仓口径：复用close_position()避免双套口径漂移
+            return self.close_position(symbol, exit_price, timestamp, exit_reason)
         
         return None
     
@@ -883,7 +916,7 @@ class PaperTradingSimulator:
         
         try:
             # 读取数据 - 扫描所有可用日期的数据
-            data_base_dir = Path("C:/Users/user/Desktop/ofi_cvd_framework/ofi_cvd_framework/v13_ofi_ai_system/data/ofi_cvd")
+            data_base_dir = Path(os.getenv("V13_DATA_ROOT", "data/ofi_cvd"))
             
             # 扫描所有日期目录
             date_dirs = [d for d in data_base_dir.iterdir() if d.is_dir() and d.name.startswith("date=")]
@@ -912,7 +945,8 @@ class PaperTradingSimulator:
             print(f"   CVD文件: {len(cvd_files)}个")
             
             if not prices_files:
-                print(f"[失败] 数据文件不存在: {prices_dir}")
+                print("[BLOCKED] 未发现价格数据文件。请确认 V13_DATA_ROOT 指向的数据根目录存在形如 "
+                      "date=*/symbol=BTCUSDT/kind=prices/*.parquet 的文件。")
                 return
             
             # 读取所有价格数据文件
@@ -994,7 +1028,7 @@ class PaperTradingSimulator:
                     ofi_df_sorted[['timestamp', 'ofi_z']].rename(columns={'ofi_z': 'z_ofi'}),
                     on='timestamp',
                     direction='backward',
-                    tolerance=pd.Timedelta(seconds=5)
+                    tolerance=pd.Timedelta(seconds=1)  # 优化：从2s改为1s，让z对齐更严谨
                 )
             else:
                 merged_df['z_ofi'] = 0.0
@@ -1006,7 +1040,7 @@ class PaperTradingSimulator:
                     cvd_df_sorted[['timestamp', 'z_cvd']],
                     on='timestamp',
                     direction='backward',
-                    tolerance=pd.Timedelta(seconds=5)
+                    tolerance=pd.Timedelta(seconds=1)  # 优化：从2s改为1s，让z对齐更严谨
                 )
             else:
                 merged_df['z_cvd'] = 0.0
@@ -1015,10 +1049,24 @@ class PaperTradingSimulator:
             merged_df['z_ofi'] = merged_df['z_ofi'].fillna(0.0)
             merged_df['z_cvd'] = merged_df['z_cvd'].fillna(0.0)
             
+            # 预计算指标列：缺失 ret 时用价格就地计算，保证 ATR/弱信号更真实
+            if 'ret' not in merged_df.columns:
+                merged_df['ret'] = merged_df['price'].pct_change()
+            merged_df['rv_60s'] = merged_df['ret'].rolling(60).std().fillna(0.01)
+                
+            if 'trades_1m' not in merged_df.columns:
+                merged_df['trades_1m'] = 60.0
+            
             print(f"成功 数据合并完成，记录数: {len(merged_df)}")
             
-            # 模拟交易 - 使用核心算法处理信号
-            for _, row in merged_df.iterrows():
+            # 一次性校准场景退出阈值（基于最近30分钟Q90）
+            if len(merged_df) > 0:
+                self._calibrate_thresholds(merged_df, merged_df['timestamp'].iloc[0])
+            
+            # 模拟交易 - 使用核心算法处理信号（性能优化：使用itertuples）
+            for row_tuple in merged_df.itertuples():
+                # 将namedtuple转换为字典格式，保持向后兼容
+                row = row_tuple._asdict()
                 timestamp = row['timestamp']
                 ts_ms = int(timestamp.timestamp() * 1000)
                 price = row['price']
@@ -1028,8 +1076,11 @@ class PaperTradingSimulator:
                 z_cvd = row.get('z_cvd', 0.0)
                 
                 # 第二步：使用自适应场景标签
+                # 仅传近 60 分钟窗口，显著降低长跑复杂度
+                cutoff = timestamp - pd.Timedelta(minutes=60)
+                win_df = merged_df[merged_df['timestamp'] >= cutoff]
                 scenario_2x2 = self.calculate_adaptive_scenario_labels(
-                    symbol, timestamp, merged_df
+                    symbol, timestamp, win_df
                 )
                 
                 # 使用核心算法一站式处理信号
@@ -1037,100 +1088,74 @@ class PaperTradingSimulator:
                 
                 # 风险管理检查（在信号处理前）
                 if self.positions:
-                    for symbol in list(self.positions.keys()):
-                        risk_result = self.check_risk_management(symbol, price, timestamp)
+                    for sym_pos in list(self.positions.keys()):
+                        risk_result = self.check_risk_management(sym_pos, price, timestamp)
                         if risk_result:
-                            print(f"[风险管理] {symbol} 触发风险管理: {risk_result['exit_reason']}")
+                            print(f"[风险管理] {sym_pos} 触发风险管理: {risk_result['exit_reason']}")
                 
-                # 关键修复：确保OFI/CVD计算器正确更新
-                # 从数据中提取订单簿信息用于OFI计算
-                if 'best_bid' in row and 'best_ask' in row:
-                    # 构建完整5档订单簿快照用于OFI计算
-                    # 基于最优价构建L1-L5档深度数据
-                    best_bid = row['best_bid']
-                    best_ask = row['best_ask']
-                    spread = best_ask - best_bid
-                    
-                    # 构建5档买盘（价格递减，数量递减）
-                    bids = [
-                        [best_bid, 1.0],                    # L1: 最优买价
-                        [best_bid - spread * 0.1, 0.8],     # L2: 下1档
-                        [best_bid - spread * 0.2, 0.6],     # L3: 下2档
-                        [best_bid - spread * 0.3, 0.4],     # L4: 下3档
-                        [best_bid - spread * 0.4, 0.2]      # L5: 下4档
-                    ]
-                    
-                    # 构建5档卖盘（价格递增，数量递减）
-                    asks = [
-                        [best_ask, 1.0],                    # L1: 最优卖价
-                        [best_ask + spread * 0.1, 0.8],     # L2: 上1档
-                        [best_ask + spread * 0.2, 0.6],     # L3: 上2档
-                        [best_ask + spread * 0.3, 0.4],     # L4: 上3档
-                        [best_ask + spread * 0.4, 0.2]      # L5: 上4档
-                    ]
-                    
-                    # 更新OFI计算器（通过核心算法方法，确保统计正确）
-                    # 强制打通OFI链路：确保OFI更新数>0
-                    self.core_algo.update_ofi(bids, asks, ts_ms)
-                    
-                    # 记录OFI更新状态用于诊断
-                    if not hasattr(self, '_ofi_update_count'):
-                        self._ofi_update_count = 0
-                    self._ofi_update_count += 1
+                # 纸上交易采用"只读预计算Z"口径，避免双通路状态偏移
+                # （如需改为"全量用核心计算器重算"，则不要 merge 外部 z_*）
+                # 注释：当前使用预计算的z_ofi和z_cvd，不再更新内部计算器状态
                 
-                # 从数据中提取交易信息用于CVD计算（通过核心算法方法，确保统计正确）
-                if 'is_buy' in row:
-                    # 更新CVD计算器
-                    self.core_algo.update_cvd(
-                        price=price, qty=1.0, is_buy=row['is_buy'], event_time_ms=ts_ms
-                    )
-                else:
-                    # 使用Tick Rule
-                    self.core_algo.update_cvd(
-                        price=price, qty=1.0, is_buy=None, event_time_ms=ts_ms
-                    )
-                
-                # 从数据帧估算质量指标
-                mid = (merged_df["best_bid"].iloc[-1] + merged_df["best_ask"].iloc[-1]) / 2 if "best_bid" in merged_df.columns else price
-                spread_bps = ((merged_df["best_ask"].iloc[-1] - merged_df["best_bid"].iloc[-1]) / mid * 10000) if "best_bid" in merged_df.columns else 5.0
-                realized_vol = float(merged_df["ret"].rolling(60).std().iloc[-1]) if "ret" in merged_df.columns else 0.01
-                trade_rate = float(merged_df["trades_1m"].iloc[-1]) if "trades_1m" in merged_df.columns else 60.0
+                # 从数据帧估算质量指标 - 使用当前行数据而非整表尾部
+                bb = row['best_bid'] if 'best_bid' in row else None
+                ba = row['best_ask'] if 'best_ask' in row else None
+                mid = (bb + ba)/2 if (bb is not None and ba is not None) else price
+                spread_bps = ((ba - bb)/mid*10000) if (bb is not None and ba is not None and mid>0) else 5.0
+                realized_vol = float(row.get('rv_60s', 0.01))
+                trade_rate = float(row.get('trades_1m', 60.0))
                 missing_msgs_rate = 0.0
                 
                 # 调用核心算法处理信号
                 sig = self.core_algo.process_signal(
-                    ts_ms=ts_ms, symbol=symbol, z_ofi=z_ofi, z_cvd=z_cvd, price=price,
+                    ts_ms=ts_ms, symbol=self.symbol, z_ofi=z_ofi, z_cvd=z_cvd, price=price,
                     trade_rate=trade_rate, realized_vol=realized_vol,
                     spread_bps=spread_bps, missing_msgs_rate=missing_msgs_rate
                 )
                 
+                # 判空检查，避免AttributeError
+                if sig is None:
+                    continue  # 去重/无效帧
+                
                 # 护栏/确认 → 统一用成熟组件结果
                 if sig.gating:
-                    print(f"[BLOCK] 护栏触发: {self.core_algo.guard_reason}")
+                    logger.debug(f"Guard triggered: {self.core_algo.guard_reason}")
                     continue
                 
                 if not sig.confirm:
-                    print("[警告] 信号未确认，跳过交易")
+                    logger.debug("Signal not confirmed, skipping trade")
                     continue
                 
                 # 使用核心算法计算的融合分数（统一口径）
                 fusion_score = sig.score
                 
-                # 结构化信号日志（使用SafeJsonlWriter版）
-                self.core_algo.log_signal(sig, output_dir=os.getenv("V13_OUTPUT_DIR", "./runtime"))
+                # 记录近3帧方向用于反转稳定性判定
+                if symbol not in self.signal_history:
+                    self.signal_history[symbol] = deque(maxlen=3)
+                self.signal_history[symbol].append(1 if fusion_score > 0 else -1)
+                
+                # 保存信号状态用于统一口径判断
+                self._last_signal = sig
+                
+                # 结构化信号日志（分离纸上交易与线上影子产物）
+                paper_out = Path(os.getenv("V13_OUTPUT_DIR", "./runtime")) / "paper"
+                self.core_algo.log_signal(sig, output_dir=str(paper_out))
                 
                 # 检查离场条件
-                self.check_exit_conditions(symbol, price, fusion_score, timestamp)
+                self.check_exit_conditions(symbol, price, fusion_score, timestamp, realized_vol)
                 
                 # 检查入场条件（使用统一信号）
                 self.simulate_trade(symbol, price, fusion_score, scenario_2x2, timestamp)
             
             # 强制平仓所有持仓
-            for symbol, trade in list(self.positions.items()):
+            for sym_pos2, trade in list(self.positions.items()):
                 # 使用最后一次价格
                 last_price = prices_df['price'].iloc[-1] if len(prices_df) > 0 else 3000.0
-                self.check_exit_conditions(symbol, last_price, 0.0, 
-                                         trade['entry_time'] + timedelta(minutes=duration_minutes))
+                last_vol = 0.01
+                if 'ret' in prices_df.columns and len(prices_df) >= 60:
+                    last_vol = float(prices_df['ret'].rolling(60).std().iloc[-1]) or 0.01
+                self.check_exit_conditions(sym_pos2, last_price, 0.0,
+                    trade['entry_time'] + timedelta(minutes=duration_minutes), last_vol)
             
             print("成功 交易模拟完成")
             
@@ -1235,12 +1260,23 @@ class PaperTradingSimulator:
         winning_trades = sum(1 for trade in self.trades if trade.get('net_pnl_bps', 0) > 0)
         win_rate = winning_trades / total_trades if total_trades > 0 else 0
         
+        # 按24h归一化交易数目标（避免长窗口被误判）
+        # 计算运行时长（小时），最小1小时
+        if self.trades:
+            start_time = min(trade['entry_time'] for trade in self.trades)
+            end_time = max(trade.get('exit_time', trade['entry_time']) for trade in self.trades)
+            hours_elapsed = max(1.0, (end_time - start_time).total_seconds() / 3600)
+            trades_per_24h = total_trades * (24.0 / hours_elapsed)
+        else:
+            trades_per_24h = 0
+        
         # 检查目标
         targets = {
             "胜率>55%": win_rate > 0.55,
             "PnL>0": total_pnl > 0,
-            "回撤<10%": extended_kpis['max_drawdown'] < 10.0,
-            "交易数5-20": 5 <= total_trades <= 20
+            # 10% = 1000 bps；若希望 1% 则用 100 bps
+            "回撤<10%": extended_kpis['max_drawdown'] < 1000.0,
+            "交易数5-20/日": 5 <= trades_per_24h <= 20  # 按24h归一化
         }
         
         for target, passed in targets.items():
@@ -1341,7 +1377,7 @@ class PaperTradingSimulator:
                 if 'scenario_counts' in cache:
                     print(f"   {symbol}: {cache['scenario_counts']}")
         
-        # 保存结果
+        # 保存结果到文件（输出归档）
         results = {
             'timestamp': datetime.now().isoformat(),
             'total_trades': total_trades,
@@ -1349,6 +1385,71 @@ class PaperTradingSimulator:
             'scenario_kpis': self.kpis,
             'trades': [trade for trade in self.trades if 'net_pnl_bps' in trade]
         }
+        
+        # 输出归档：保存到artifacts目录
+        self._save_results_to_files(results)
+    
+    def _save_results_to_files(self, results: dict):
+        """保存结果到文件：artifacts/paper_summary.json 和 trades.csv"""
+        try:
+            # 创建artifacts目录
+            artifacts_dir = Path(os.getenv("V13_OUTPUT_DIR", "./runtime")) / "artifacts"
+            artifacts_dir.mkdir(exist_ok=True)
+            
+            # 保存汇总结果到JSON
+            summary_file = artifacts_dir / "paper_summary.json"
+            with open(summary_file, "w", encoding="utf-8") as f:
+                json.dump(results, f, ensure_ascii=False, indent=2)
+            print(f"[归档] 汇总结果已保存: {summary_file}")
+            
+            # 保存交易明细到CSV
+            if results['trades']:
+                trades_file = artifacts_dir / "trades.csv"
+                trades_df = pd.DataFrame(results['trades'])
+                trades_df.to_csv(trades_file, index=False, encoding="utf-8")
+                print(f"[归档] 交易明细已保存: {trades_file}")
+            
+            # 保存闸门统计快照
+            if hasattr(self.core_algo, 'get_gate_reason_stats'):
+                gate_stats = self.core_algo.get_gate_reason_stats()
+                gate_file = artifacts_dir / "gate_stats_snapshot.json"
+                with open(gate_file, "w", encoding="utf-8") as f:
+                    json.dump(gate_stats, f, ensure_ascii=False, indent=2)
+                print(f"[归档] 闸门统计已保存: {gate_file}")
+            
+            # 保存场景覆盖统计（近4h计数）
+            if hasattr(self, 'scenario_coverage') and self.scenario_coverage:
+                coverage_data = {}
+                for symbol, coverage in self.scenario_coverage.items():
+                    coverage_data[symbol] = {}
+                    for scenario, counts in coverage.items():
+                        coverage_data[symbol][scenario] = len(counts)  # 近4h计数
+                
+                coverage_file = artifacts_dir / "scenario_coverage.json"
+                with open(coverage_file, "w", encoding="utf-8") as f:
+                    json.dump(coverage_data, f, ensure_ascii=False, indent=2)
+                print(f"[归档] 场景覆盖统计已保存: {coverage_file}")
+            
+            # 保存关键设置快照
+            settings = {
+                'timestamp': datetime.now().isoformat(),
+                'symbol': self.symbol,
+                'tick_size': self.tick_size,
+                'scene_gate': self.SCENE_GATE,
+                'cost_bps': self.cost_bps,
+                'weak_signal_threshold': self.weak_signal_threshold,
+                'weak_signal_volatility_threshold': self.weak_signal_volatility_threshold,
+                'weak_signal_activity_threshold': self.weak_signal_activity_threshold,
+                'enable_weak_signal_throttle': self.enable_weak_signal_throttle,
+                'config_path': self.config_path
+            }
+            settings_file = artifacts_dir / "settings.json"
+            with open(settings_file, "w", encoding="utf-8") as f:
+                json.dump(settings, f, ensure_ascii=False, indent=2)
+            print(f"[归档] 关键设置已保存: {settings_file}")
+            
+        except Exception as e:
+            print(f"[警告] 结果归档失败: {e}")
     
     def _print_gate_reason_diagnostics(self):
         """打印闸门原因统计诊断"""
