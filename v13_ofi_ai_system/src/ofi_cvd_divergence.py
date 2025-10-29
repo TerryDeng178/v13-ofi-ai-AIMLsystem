@@ -11,12 +11,10 @@ Author: V13 OFI+CVD AI System
 Created: 2025-01-20
 """
 
-import time
 import math
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple, Any
 from enum import Enum
-import numpy as np
 from collections import deque
 
 
@@ -140,16 +138,35 @@ class PivotDetector:
 class DivergenceDetector:
     """背离检测器"""
     
-    def __init__(self, config: DivergenceConfig = None, config_loader=None):
+    def __init__(self, config: DivergenceConfig = None, config_loader=None,
+                 runtime_cfg: Optional[Dict[str, Any]] = None):
         """
         初始化背离检测器
         
         Args:
             config: 背离检测配置对象，默认None使用默认配置
-            config_loader: 配置加载器实例，用于从统一配置系统加载参数
+            config_loader: 配置加载器实例（兼容旧接口，库式调用时不应使用）
+            runtime_cfg: 运行时配置字典，库式调用时使用（优先于config_loader）
         """
-        if config_loader:
-            # 从统一配置系统加载参数
+        # 优先使用运行时配置字典（库式调用）
+        if runtime_cfg is not None:
+            divergence_cfg = runtime_cfg.get('divergence', {}) if isinstance(runtime_cfg, dict) else {}
+            # 从运行时配置构建DivergenceConfig对象
+            default = DivergenceConfig()
+            self.cfg = DivergenceConfig(
+                swing_L=divergence_cfg.get('swing_L', default.swing_L),
+                ema_k=divergence_cfg.get('ema_k', default.ema_k),
+                z_hi=divergence_cfg.get('z_hi', default.z_hi),
+                z_mid=divergence_cfg.get('z_mid', default.z_mid),
+                min_separation=divergence_cfg.get('min_separation', default.min_separation),
+                cooldown_secs=divergence_cfg.get('cooldown_secs', default.cooldown_secs),
+                warmup_min=divergence_cfg.get('warmup_min', default.warmup_min),
+                max_lag=divergence_cfg.get('max_lag', default.max_lag),
+                use_fusion=divergence_cfg.get('use_fusion', default.use_fusion),
+                cons_min=divergence_cfg.get('cons_min', default.cons_min)
+            )
+        elif config_loader:
+            # 从统一配置系统加载参数（兼容旧接口）
             self.cfg = self._load_from_config_loader(config_loader)
         else:
             self.cfg = config or DivergenceConfig()
@@ -165,6 +182,10 @@ class DivergenceDetector:
         self._last_event_ts = 0.0
         self._last_event_type = None
         self._sample_count = 0
+        
+        # 细粒度冷却与去重
+        self._last_emitted_pairs = {}  # key: f"{channel}:{kind}" -> (idx_a, idx_b)
+        self._last_event_ts_by_key = {}  # 细粒度冷却: event_type+channel
     
     def _load_from_config_loader(self, config_loader) -> DivergenceConfig:
         """
@@ -178,7 +199,7 @@ class DivergenceDetector:
         """
         try:
             # 导入背离检测配置加载器
-            from .divergence_config_loader import DivergenceConfigLoader
+            from config.divergence_config_loader import DivergenceConfigLoader
             
             # 创建背离检测配置加载器
             divergence_config_loader = DivergenceConfigLoader(config_loader)
@@ -194,7 +215,16 @@ class DivergenceDetector:
                 cooldown_secs=config.cooldown_secs,
                 warmup_min=config.warmup_min,
                 max_lag=config.max_lag,
-                use_fusion=config.use_fusion
+                use_fusion=config.use_fusion,
+                # 新增映射（若配置存在，否则使用默认值）
+                cons_min=getattr(config, "cons_min", 0.3),
+                z_mag_weight=getattr(config, "z_mag_weight", 0.35),
+                pivot_weight=getattr(config, "pivot_weight", 0.25),
+                agree_weight=getattr(config, "agree_weight", 0.25),
+                consis_weight=getattr(config, "consis_weight", 0.15),
+                strong_threshold=getattr(config, "strong_threshold", 70.0),
+                normal_threshold=getattr(config, "normal_threshold", 50.0),
+                weak_threshold=getattr(config, "weak_threshold", 35.0)
             )
             
         except Exception as e:
@@ -202,28 +232,21 @@ class DivergenceDetector:
             logger = logging.getLogger(__name__)
             logger.warning(f"Failed to load divergence detection config from config_loader: {e}. Using default config.")
             return DivergenceConfig()
-        self._last_event_ts_by_type = {}  # 按类型分别跟踪冷却时间
-        self._stats = {
-            'events_total': 0,
-            'events_by_type': {dt.value: 0 for dt in DivergenceType},
-            'suppressed_total': 0,
-            'suppressed_by_reason': {},
-            'pivots_detected': 0,
-            'pivots_by_channel': {'ofi': 0, 'cvd': 0, 'fusion': 0},  # 新增：分通道统计
-            'last_update_ts': 0.0
-        }
-    
+
     def _reset_state(self):
         """重置状态"""
         self._last_event_ts = 0.0
         self._last_event_type = None
         self._sample_count = 0
         self._last_event_ts_by_type = {}
+        self._last_emitted_pairs = {}
+        self._last_event_ts_by_key = {}
         self._stats = {
             'events_total': 0,
             'events_by_type': {dt.value: 0 for dt in DivergenceType},
             'suppressed_total': 0,
             'suppressed_by_reason': {},
+            'soft_suppressed_total': 0,
             'pivots_detected': 0,
             'pivots_by_channel': {'ofi': 0, 'cvd': 0, 'fusion': 0},
             'last_update_ts': 0.0
@@ -252,31 +275,47 @@ class DivergenceDetector:
         self._sample_count += 1
         self._stats['last_update_ts'] = ts
         
-        # 输入验证
+        # 背离检测降权机制（B阶段优化）
+        confidence_multiplier = 1.0  # 默认置信度
+        
         if not self._validate_input(ts, price, z_ofi, z_cvd, lag_sec):
-            return self._create_invalid_result("invalid_input", warmup)
-        
-        # 暖启动检查
-        if warmup or self._sample_count < self.cfg.warmup_min:
-            return self._create_invalid_result("warmup", warmup)
-        
-        # 滞后检查
-        if lag_sec > self.cfg.max_lag:
             self._stats['suppressed_total'] += 1
+            self._stats['suppressed_by_reason']['invalid_input'] = \
+                self._stats['suppressed_by_reason'].get('invalid_input', 0) + 1
+            return None  # 无效输入直接跳过
+        elif warmup or self._sample_count < self.cfg.warmup_min:
+            # 暖启动期间降权而非跳过
+            confidence_multiplier = 0.3  # 降权到30%
+            self._stats['suppressed_by_reason']['warmup'] = \
+                self._stats['suppressed_by_reason'].get('warmup', 0) + 1
+            self._stats['soft_suppressed_total'] = \
+                self._stats.get('soft_suppressed_total', 0) + 1
+        elif lag_sec > self.cfg.max_lag:
+            # 延迟超限降权而非跳过
+            confidence_multiplier = 0.5  # 降权到50%
             self._stats['suppressed_by_reason']['lag_exceeded'] = \
                 self._stats['suppressed_by_reason'].get('lag_exceeded', 0) + 1
-            return self._create_invalid_result("lag_exceeded", warmup)
+            self._stats['soft_suppressed_total'] = \
+                self._stats.get('soft_suppressed_total', 0) + 1
+        
+        # 输入验证（已在上面处理，使用降权机制）
+        # 暖启动和延迟检查（已在上面处理，使用降权机制）
         
         # 裁剪Z值
         z_ofi_clipped = max(-5.0, min(5.0, z_ofi))
         z_cvd_clipped = max(-5.0, min(5.0, z_cvd))
         
+        # Fusion 裁剪到 Z 量纲（带合法性检查）
+        fusion_score_clipped = None
+        if isinstance(fusion_score, (int, float)) and math.isfinite(fusion_score):
+            fusion_score_clipped = max(-5.0, min(5.0, float(fusion_score)))
+        
         # 添加数据点并检测枢轴
         new_ofi = self.price_ofi_detector.add_point_and_detect(ts, price, z_ofi_clipped)
         new_cvd = self.price_cvd_detector.add_point_and_detect(ts, price, z_cvd_clipped)
         new_fus = 0
-        if self.price_fusion_detector and fusion_score is not None:
-            new_fus = self.price_fusion_detector.add_point_and_detect(ts, price, fusion_score)
+        if self.price_fusion_detector and fusion_score_clipped is not None:
+            new_fus = self.price_fusion_detector.add_point_and_detect(ts, price, fusion_score_clipped)
 
         # 统计只加"新增数量"
         self._stats['pivots_detected'] += (new_ofi + new_cvd + new_fus)
@@ -292,8 +331,8 @@ class DivergenceDetector:
         
         # 检测背离
         divergence_event = self._detect_divergence(
-            ts, price, z_ofi_clipped, z_cvd_clipped, fusion_score, consistency,
-            ofi_pivots, cvd_pivots, fusion_pivots
+            ts, price, z_ofi_clipped, z_cvd_clipped, fusion_score_clipped, consistency,
+            ofi_pivots, cvd_pivots, fusion_pivots, confidence_multiplier
         )
         
         if divergence_event:
@@ -333,7 +372,7 @@ class DivergenceDetector:
     def _detect_divergence(self, ts: float, price: float, z_ofi: float, z_cvd: float,
                           fusion_score: Optional[float], consistency: Optional[float],
                           ofi_pivots: List[Dict], cvd_pivots: List[Dict], 
-                          fusion_pivots: List[Dict]) -> Optional[Dict[str, Any]]:
+                          fusion_pivots: List[Dict], confidence_multiplier: float = 1.0) -> Optional[Dict[str, Any]]:
         """检测背离"""
         
         # 并行检测：先检测方向性背离，再检查冲突
@@ -361,14 +400,14 @@ class DivergenceDetector:
         if evt:
             divergence_events.append(evt)
         
-        # Price-Fusion背离 - 使用新方法检测L和H
+        # Price-Fusion背离 - 使用新方法检测L和H，传入 consistency
         if self.cfg.use_fusion and fusion_score is not None:
-            evt, reason = self._check_price_indicator_divergence_new("fusion", self.price_fusion_detector, 'L')
+            evt, reason = self._check_price_indicator_divergence_new("fusion", self.price_fusion_detector, 'L', consistency)
             self._debug_tally(reason)
             if evt:
                 divergence_events.append(evt)
                 
-            evt, reason = self._check_price_indicator_divergence_new("fusion", self.price_fusion_detector, 'H')
+            evt, reason = self._check_price_indicator_divergence_new("fusion", self.price_fusion_detector, 'H', consistency)
             self._debug_tally(reason)
             if evt:
                 divergence_events.append(evt)
@@ -378,12 +417,16 @@ class DivergenceDetector:
         if divergence_events:
             best_directional_event = max(divergence_events, key=lambda x: x['score'])
             
-            # 检查该类型事件是否在冷却期
-            if self._is_in_cooldown(ts, best_directional_event['type']):
+            # 使用细粒度冷却检查：基于 event_type + channel
+            et = best_directional_event["type"]
+            ch = best_directional_event.get("channel", "")
+            if self._is_in_cooldown_key(ts, et, ch):
                 self._stats['suppressed_total'] += 1
                 self._stats['suppressed_by_reason']['cooldown'] = \
                     self._stats['suppressed_by_reason'].get('cooldown', 0) + 1
                 best_directional_event = None
+            else:
+                self._mark_cooldown_key(ts, et, ch)
         
         # 检查OFI-CVD冲突（作为附加信息）
         conflict_event = self._check_ofi_cvd_conflict(z_ofi, z_cvd, ts)
@@ -397,6 +440,12 @@ class DivergenceDetector:
             else:
                 # 如果没有方向性背离，返回冲突事件
                 return conflict_event
+        
+        # 应用置信度乘数（B阶段优化）
+        if best_directional_event and confidence_multiplier < 1.0:
+            best_directional_event['score'] = best_directional_event['score'] * confidence_multiplier
+            best_directional_event['confidence'] = confidence_multiplier
+            best_directional_event['reason_codes'].append(f'confidence_{confidence_multiplier:.1f}')
         
         return best_directional_event
     
@@ -458,6 +507,17 @@ class DivergenceDetector:
         last_ts = self._last_event_ts_by_type[event_type]
         return (ts - last_ts) < self.cfg.cooldown_secs
     
+    def _is_in_cooldown_key(self, ts: float, event_type: str, channel: str) -> bool:
+        """细粒度冷却检查：基于 event_type + channel"""
+        key = f"{event_type}:{channel}"
+        last = self._last_event_ts_by_key.get(key)
+        return (last is not None) and ((ts - last) < self.cfg.cooldown_secs)
+    
+    def _mark_cooldown_key(self, ts: float, event_type: str, channel: str):
+        """标记细粒度冷却"""
+        key = f"{event_type}:{channel}"
+        self._last_event_ts_by_key[key] = ts
+    
     def _check_ofi_cvd_conflict(self, z_ofi: float, z_cvd: float, ts: float) -> Optional[Dict[str, Any]]:
         """检查OFI-CVD冲突"""
         if abs(z_ofi) >= self.cfg.z_hi and abs(z_cvd) >= self.cfg.z_mid:
@@ -476,7 +536,8 @@ class DivergenceDetector:
                 }
         return None
     
-    def _check_price_indicator_divergence_new(self, channel_name: str, detector, kind: str) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    def _check_price_indicator_divergence_new(self, channel_name: str, detector, kind: str, 
+                                              consistency: Optional[float] = None) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
         """新的背离检测方法：只用价格枢轴对，在相同时间点读取指标值"""
         # 1) 用历史"价格枢轴"做同型配对
         pivs = detector.get_all_pivots()
@@ -488,6 +549,11 @@ class DivergenceDetector:
         if (b["index"] - a["index"]) < self.cfg.min_separation:
             return None, "too_close"
 
+        # 已发对儿去重: 同一 channel+kind 的 (a,b) 不重复发
+        dedup_key = f"{channel_name}:{kind}"
+        if self._last_emitted_pairs.get(dedup_key) == (a["index"], b["index"]):
+            return None, "duplicate_pair"
+
         # 2) 直接取同一时间点的"指标数值"做比较（注意：这些值已在枢轴里缓存）
         pa, pb = a["price"], b["price"]
         ia, ib = a["indicator"], b["indicator"]
@@ -497,13 +563,13 @@ class DivergenceDetector:
         if not div_type:
             return None, "no_pattern"
 
-        # 4) 使用统一的评分函数
+        # 4) 使用统一的评分函数，传入 consistency
         score = self._calculate_divergence_score(
             pivot_a=a, 
             pivot_b=b, 
             current_value=ib,  # 使用b点的指标值
             indicator_name=channel_name,
-            consistency=None  # 暂时不传consistency
+            consistency=consistency  # 传入外部 consistency
         )
 
         if score < self.cfg.weak_threshold:
@@ -516,19 +582,43 @@ class DivergenceDetector:
             "bull_hidden": "hidden_bull",
             "bear_hidden": "hidden_bear"
         }
+        evt_type = type_mapping.get(div_type, div_type)
         
+        # 构造 debug 字段：填充对应通道的指标值
+        dbg = {
+            "z_ofi": 0.0, 
+            "z_cvd": 0.0, 
+            "fusion": 0.0,
+            "consistency": consistency or 0.0
+        }
+        if channel_name == "ofi":
+            dbg["z_ofi"] = ib
+        elif channel_name == "cvd":
+            dbg["z_cvd"] = ib
+        elif channel_name == "fusion":
+            dbg["fusion"] = ib
+        
+        # 统一事件结构
         evt = {
             "ts": b["ts"],
-            "type": type_mapping.get(div_type, div_type),  # 映射到标准类型
+            "type": evt_type,
             "divergence_type": div_type,
             "score": score,
             "channel": channel_name,
-            "channels": [f"price_{channel_name}"],  # 新增：统一下游消费
+            "channels": [f"price_{channel_name}"],
             "pivot_index": b["index"],
-            "reason_codes": [],  # 添加reason_codes字段
-            "a": {"idx": a["index"], "price": pa, "ind": ia},
-            "b": {"idx": b["index"], "price": pb, "ind": ib},
+            "reason_codes": [],
+            "lookback": {"swing_L": self.cfg.swing_L, "ema": self.cfg.ema_k},
+            "pivots": {
+                "price": {"A": pa, "B": pb},
+                channel_name: {"A": ia, "B": ib}
+            },
+            "debug": dbg,
+            "warmup": (self._sample_count < self.cfg.warmup_min),
+            "stats": self._stats.copy()
         }
+        # 标记去重
+        self._last_emitted_pairs[dedup_key] = (a["index"], b["index"])
         return evt, None
 
     def _check_price_indicator_divergence(self, pivots: List[Dict], channel: str, 
@@ -704,12 +794,4 @@ class DivergenceDetector:
     def reset(self):
         """重置检测器状态"""
         self._reset_state()
-        self._stats = {
-            'events_total': 0,
-            'events_by_type': {dt.value: 0 for dt in DivergenceType},
-            'suppressed_total': 0,
-            'suppressed_by_reason': {},
-            'pivots_detected': 0,
-            'pivots_by_channel': {'ofi': 0, 'cvd': 0, 'fusion': 0},
-            'last_update_ts': 0.0
-        }
+        # 注意：_reset_state() 已经初始化了 self._stats，无需重复设置

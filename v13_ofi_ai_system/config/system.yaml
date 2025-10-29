@@ -1,135 +1,56 @@
-# V13 OFI+CVD+AI Trading System - 系统配置
-# 版本: v13.0
-# 创建日期: 2025-10-19
-# 最后更新: 2025-10-19
+# V13 OFI+CVD+AI Trading System — CLEAN system.yaml (compatible, unified)
+# Schema version: 13.1-clean
+# Notes:
+# - Single source of truth; no duplicate blocks; explicit ports; consistent units (seconds)
+# - Backward-compat keys kept where needed and marked as deprecated
+# - Designed to be hot-reload friendly and diff-friendly
 
-# ============================================================================
-# 系统元信息
-# ============================================================================
 system:
   name: "OFI_CVD_AI_Trading_System"
-  version: "v13.0"
-  # 环境: development | testing | production
-  # 可通过环境变量 ENV 覆盖
-  environment: "development"
-  
-  # 系统描述
-  description: "基于订单流失衡(OFI)和累积成交量差(CVD)的AI增强交易系统"
-  
-  # 系统作者
+  version: "v13.1-clean"
+  environment: "development"   # overridable by ENV
+  description: "OFI + CVD fusion trading system (clean config)"
   author: "V13 Team"
-  
-  # 创建时间
   created_at: "2025-10-19"
 
-# ============================================================================
-# 背离检测配置
-# ============================================================================
+# ================================ Divergence Detection ================================
 divergence_detection:
-  # 是否启用背离检测
   enabled: true
-  
-  # 配置版本
+  mode: "pivot"   # pivot | rules  (loader should read only the branch defined here)
+
+  # --- Pivot-based configuration (authoritative when mode=pivot) ---
+  pivot_detection:
+    swing_L: 13
+    ema_k: 5
+  thresholds:
+    z_hi: 1.6
+    z_mid: 0.6
+  denoising:
+    min_separation: 6
+    cooldown_secs: 30.0   # seconds
+    warmup_min: 100
+    max_lag: 0.3          # seconds
+  fusion:
+    use_fusion: true
+
+  # --- Rules branch (kept for backward-compat; values aligned to pivot branch) ---
   version: "v1.0"
-  description: "背离检测参数配置，支持条件覆盖和热更新"
-  
-  # 默认参数
   default:
     swing_L: 13
     z_hi: 1.6
     z_mid: 0.6
-    cooldown_secs: 30
-    max_lag: 20
-    cons_min: 2
+    cooldown_secs: 30.0
+    max_lag: 0.3
+    cons_min: 0.45
     min_separation: 6
     warmup_min: 100
     weak_threshold: 35.0
-  
-  # 条件覆盖规则
-  overrides:
-    # OFI数据源在清淡时段使用更保守参数
-    - when:
-        source: "OFI_ONLY"
-        liquidity: "quiet"
-      set:
-        z_hi: 1.2
-        z_mid: 0.4
-        cooldown_secs: 60
-    
-    # CVD数据源在活跃时段使用更敏感参数
-    - when:
-        source: "CVD_ONLY"
-        liquidity: "active"
-      set:
-        z_hi: 1.8
-        z_mid: 0.8
-        cooldown_secs: 15
-    
-    # 融合数据源在白天时段使用长周期参数
-    - when:
-        source: "FUSION"
-        session: "day"
-      set:
-        swing_L: 21
-        z_hi: 1.6
-        z_mid: 0.6
-    
-    # 夜间时段所有数据源使用保守参数
-    - when:
-        session: "night"
-      set:
-        z_hi: 1.4
-        z_mid: 0.5
-        cooldown_secs: 45
-    
-    # 高频交易对使用短周期参数
-    - when:
-        symbol: "BTCUSDT"
-      set:
-        swing_L: 8
-        cooldown_secs: 10
-    
-    # 低频交易对使用长周期参数
-    - when:
-        symbol: "ETHUSDT"
-      set:
-        swing_L: 21
-        cooldown_secs: 60
-  
-  # 枢轴检测参数
-  pivot_detection:
-    swing_L: 12                # 枢轴检测窗口长度
-    ema_k: 5                   # EMA平滑参数
-  
-  # 强度阈值
-  thresholds:
-    z_hi: 1.5                  # 高强度阈值
-    z_mid: 0.7                 # 中等强度阈值
-  
-  # 去噪参数
-  denoising:
-    min_separation: 6          # 最小枢轴间距
-    cooldown_secs: 1.0         # 冷却时间
-    warmup_min: 100            # 暖启动最小样本数
-    max_lag: 0.300             # 最大滞后时间
-  
-  # 融合参数
-  fusion:
-    use_fusion: true           # 是否使用融合指标
-  
-  # 性能配置
-  performance:
-    max_events_per_second: 100
-    batch_size: 10
-    queue_size: 1000
-  
-  # 监控配置
+  overrides: []  # intentionally empty in clean edition to avoid ambiguity
+
+  # Monitoring & perf
+  performance: { max_events_per_second: 100, batch_size: 10, queue_size: 1000 }
   monitoring:
-    prometheus:
-      port: 8004
-      path: "/metrics"
-      scrape_interval: "5s"
-    
+    prometheus: { port: 8004, path: "/metrics", scrape_interval: "5s" }
     alerts:
       enabled: true
       rules:
@@ -137,296 +58,146 @@ divergence_detection:
           expr: "increase(divergence_events_total[5m]) == 0"
           for: "10m"
           severity: "warning"
-          summary: "背离检测模块无事件产生"
-  
-  # 校准配置
+          summary: "No divergence events emitted"
   calibration:
     file: "config/calibration/divergence_score_calibration.json"
     version: "v1.0"
-    description: "分数到期望收益/胜率映射"
-  
-  # 热更新配置
-  hot_reload:
-    enabled: true
-    watch_file: true
-    reload_delay: 1.0  # 秒
-    backup_config: true
-    log_changes: true
-  
-  # 实验配置
-  experiments:
-    enabled: false
-    ab_test_ratio: 0.1  # 10%流量用于A/B测试
-    variants:
-      - name: "baseline"
-        params:
-          swing_L: 13
-          z_hi: 1.6
-          z_mid: 0.6
-      - name: "aggressive"
-        params:
-          swing_L: 8
-          z_hi: 1.8
-          z_mid: 0.8
-  
-  # 数据源配置
-  data_sources:
-    ofi:
-      enabled: true
-      weight: 0.4
-      min_samples: 50
-    
-    cvd:
-      enabled: true
-      weight: 0.4
-      min_samples: 50
-    
-    fusion:
-      enabled: true
-      weight: 0.2
-      min_samples: 100
+    description: "score→expected return/winrate mapping"
+  hot_reload: { enabled: true, watch_file: true, reload_delay: 1.0, backup_config: true, log_changes: true }
 
-# ============================================================================
-# 融合指标配置
-# ============================================================================
+# ================================ Fusion Metrics (Fusion engine) ================================
 fusion_metrics:
-  # 配置版本
-  version: "v2.0"
-  description: "OFI+CVD融合指标配置，支持权重、阈值、去噪等参数 - Round 2优化版"
-  
-  # 基线权重配置 (Round 2 验证成功)
-  weights:
-    w_ofi: 0.6
-    w_cvd: 0.4
-    gate: 0.0  # 默认关闭门控，避免抹零中等强度信号
-    # 自动归一化：确保权重和为1.0
-  
-  # 切片覆盖配置 (Active时段优化)
-  slice_overrides:
-    active_period:
-      weights:
-        w_ofi: 0.7
-        w_cvd: 0.3
-        gate: 0.0
-      description: "Active时段使用OFI主导权重"
-    
-    quiet_period:
-      weights:
-        w_ofi: 0.5
-        w_cvd: 0.5
-        gate: 0.0
-      description: "Quiet时段使用等权重"
-  
-  # 信号阈值 - 保守配置（提高精准度）
-  thresholds:
-    # 基础阈值
-    fuse_buy: 1.5
-    fuse_strong_buy: 2.5
-    fuse_sell: -1.5
-    fuse_strong_sell: -2.5
-    
-    # 分场景阈值（按市场regime动态调整）
-    regime_thresholds:
-      active:
-        fuse_buy: 1.3
-        fuse_strong_buy: 2.3
-        fuse_sell: -1.3
-        fuse_strong_sell: -2.3
-      normal:
-        fuse_buy: 1.5
-        fuse_strong_buy: 2.5
-        fuse_sell: -1.5
-        fuse_strong_sell: -2.5
-      quiet:
-        fuse_buy: 1.7
-        fuse_strong_buy: 2.7
-        fuse_sell: -1.7
-        fuse_strong_sell: -2.7
-  
-  # 一致性阈值 - 统一配置
-  consistency:
-    min_consistency: 0.45
-    strong_min_consistency: 0.75
-    
-    # 分场景一致性阈值
-    regime_consistency:
-      active:
-        min_consistency: 0.45
-        strong_min_consistency: 0.75
-      normal:
-        min_consistency: 0.50
-        strong_min_consistency: 0.80
-      quiet:
-        min_consistency: 0.55
-        strong_min_consistency: 0.85
-  
-  # 数据处理 - 进攻版配置
-  data_processing:
-    z_clip: 3.0            # 从4.0收紧到3.0，避免极端点放大权重
-    max_lag: 0.6          # 从0.25放宽到0.6，减少频繁单因子降级
-    warmup_samples: 20    # 30 → 20 (平衡快速点火与数据质量)
-  
-  # 去噪参数 - 均衡版配置（提高稳定性）
-  denoising:
-    hysteresis_exit: 1.0  # 从0.2提升到1.0，减少抖动进出
-    cooldown_secs: 1.2    # 从0.1提升到1.2，提高冷却力度
-    min_consecutive: 2    # 从1提升到2，要求连续确认
-    min_duration: 1       # 保持1 (最低持续门槛)
-  
-  # 性能配置
-  performance:
-    max_events_per_second: 100
-    batch_size: 10
-    queue_size: 1000
-  
-  # 监控配置已合并到主monitoring部分
-  
-  # 告警配置
-  alerts:
-    consistency_threshold: 0.2  # 一致性告警阈值
-    lag_threshold: 0.5  # 滞后告警阈值
-  
-  # 热更新配置
-  hot_reload:
-    enabled: true
-    watch_file: true
-    reload_delay: 1.0
-    backup_config: true
-    log_changes: true
-  
-  # 实验配置
-  experiments:
-    enabled: false
-    ab_test_ratio: 0.1
-    variants:
-      - name: "conservative"
-        params:
-          fuse_strong_buy: 3.0
-          fuse_strong_sell: -3.0
-      - name: "aggressive"
-        params:
-          fuse_strong_buy: 2.0
-          fuse_strong_sell: -2.0
-  
-  # 日志配置
-  logging:
-    level: "INFO"
-    format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-    file: "logs/divergence.log"
-    max_size: "10MB"
-    backup_count: 5
-  
-  # 调试配置
-  debug:
-    enabled: false
-    save_events: true
-    events_file: "debug/divergence_events.json"
-    detailed_logs: false
+  version: "v13-fusion-rc1-20251028"
+  description: "OFI+CVD fusion with advanced mechanisms (flip rearm + adaptive cooldown + burst coalesce)"
 
-# ============================================================================
-# 数据源配置
-# ============================================================================
+  weights: { w_ofi: 0.6, w_cvd: 0.4, gate: 0.0 }   # weights auto-normalized by code
+
+  thresholds:
+    # v13-fusion-rc1-20251028 包B基线配置
+    fuse_buy: 0.95
+    fuse_strong_buy: 1.70
+    fuse_sell: -0.95
+    fuse_strong_sell: -1.70
+    regime_thresholds:
+      active: { fuse_buy: 1.3, fuse_strong_buy: 2.3, fuse_sell: -1.3, fuse_strong_sell: -2.3 }
+      normal: { fuse_buy: 1.5, fuse_strong_buy: 2.5, fuse_sell: -1.5, fuse_strong_sell: -2.5 }
+      quiet:  { fuse_buy: 1.7, fuse_strong_buy: 2.7, fuse_sell: -1.7, fuse_strong_sell: -2.7 }
+
+  consistency:
+    # v13-fusion-rc1-20251028 包B配置
+    min_consistency: 0.12
+    strong_min_consistency: 0.45
+    regime_consistency:
+      active: { min_consistency: 0.45, strong_min_consistency: 0.75 }
+      normal: { min_consistency: 0.50, strong_min_consistency: 0.80 }
+      quiet:  { min_consistency: 0.55, strong_min_consistency: 0.85 }
+  
+  # 数据容忍配置
+  data_processing:
+    z_clip: 4.0
+    max_lag: 0.25
+    warmup_samples: 10
+    
+  # 预热期显式观测
+  warmup:
+    enabled: true
+    log_warmup_end: true
+    warmup_threshold: 10
+
+  # Global denoising defaults (can be overridden per scenario via strategy_mode)
+  denoising: { hysteresis_exit: 0.6, cooldown_secs: 0.30, min_consecutive: 1, min_duration: 1 }
+  
+  # Grapes机制（突破冷却限制）v13-fusion-rc1-20251028
+  advanced_mechanisms:
+    # 机制1: 方向翻转即重臂
+    rearm_on_flip: true
+    flip_rearm_margin: 0.05
+    
+    # 机制2: 自适应冷却
+    adaptive_cooldown:
+      enabled: true
+      k: 0.6
+      min_secs: 0.12
+    
+    # 机制3: 微型突发合并
+    burst_coalesce_ms: 120.0
+
+  performance: { max_events_per_second: 100, batch_size: 10, queue_size: 1000 }
+  alerts: { consistency_threshold: 0.2, lag_threshold: 0.5 }
+  hot_reload: { enabled: true, watch_file: true, reload_delay: 1.0, backup_config: true, log_changes: true }
+  logging: { level: "INFO", file: "logs/fusion.log", max_size: "10MB", backup_count: 5 }
+
+# ================================ Gating Configuration ================================
+gating:
+  weak_signal_threshold: 0.05     # 宽松版：从0.08→0.05
+  consistency_min: 0.30           # 宽松版：从0.35→0.30
+  min_hold_time_sec: 10           # 诊断期：从5→10
+  reverse_cooldown_sec: 15        # 减少冷却时间，从20→15
+
+# ================================ Components Configuration (Calibration Strategy A) ================================
+components:
+  cvd:
+    z_window: 120
+    ema_alpha: 0.30           # 诊断期配置：从0.25调整到0.30
+    winsor_limit: 5.0         # 从 8 降到 5，提振尾部
+    mad_multiplier: 1.10      # 从 1.30 降低，减少过分缩放
+    mad_window_trades: 240    # 稍短，提升响应
+    ewma_fast_hl: 60          # 加快尺度响应
+    scale_fast_weight: 0.40   # 多给一些快尺度权重
+    scale_slow_weight: 0.60
+  
+  ofi:
+    z_window: 90
+    ema_alpha: 0.30           # 诊断期配置：从0.25调整到0.30
+
+# ================================ Data Source ================================
 data_source:
-  # 数据提供商
   provider: "binance"
-  
-  # 默认交易对
   default_symbol: "ETHUSDT"
-  
-  # 支持的交易对列表
-  symbols:
-    - "ETHUSDT"
-    - "BTCUSDT"
-  
-  # WebSocket配置
+  symbols: [ "ETHUSDT", "BTCUSDT" ]
   websocket:
-    # 连接配置
     connection:
-      # 连接超时（秒）
       timeout: 30
-      # 重连间隔（秒）
       reconnect_interval: 5
-      # 最大重连次数（0表示无限重连）
       max_reconnect_attempts: 0
-      # Ping间隔（秒）- 官方标准：20秒PING间隔
       ping_interval: 20
-      # 心跳超时（秒）- 币安官方要求：1分钟内回复PONG
       heartbeat_timeout: 60
-      # 指数退避最大间隔（秒）
       max_backoff_interval: 30
-    
-    # 数据流配置
     stream:
-      # 深度更新级别
       depth_levels: 5
-      # 数据更新频率（毫秒）
       update_frequency: 100
-      # 缓冲区大小
       buffer_size: 1000
-      # 背压保护阈值
       backpressure_threshold: 0.8
-    
-    # 日志配置
     logging:
-      # 日志级别
       level: "INFO"
-      # 日志轮转间隔（秒）
       rotate_interval: 60
-      # 最大日志文件大小（字节）
       max_file_size: 5000000
-      # 保留的日志文件数量
       backup_count: 7
-      # 是否启用NDJSON格式
       enable_ndjson: true
-    
-    # 性能监控配置
     monitoring:
-      # 性能统计输出间隔（秒）
       stats_interval: 60
-      # 是否启用性能指标
       enable_metrics: true
-      # 是否输出处理时延统计
       enable_latency_stats: true
-    
-    # 数据存储配置
     storage:
-      # 数据存储目录
       data_dir: "data/order_book"
-      # 日志存储目录
       log_dir: "logs"
-      # 是否启用数据压缩
       enable_compression: true
-      # 压缩格式
       compression_format: "gzip"
 
-# ============================================================================
-# 组件配置
-# ============================================================================
+# ================================ Components ================================
 components:
-  # CVD (Cumulative Volume Delta) 组件
   cvd:
-    # 是否启用
     enabled: true
-    
-    # CVD配置文件路径（相对于config目录）
+    description: "Cumulative Volume Delta with robust scaling and Z-score"
     config_file: "profiles/analysis.env"
-    
-    # 实时模式配置文件
     realtime_config_file: "profiles/realtime.env"
-    
-    # 描述
-    description: "累积成交量差计算和Z-score标准化"
-    
-    # CVD计算参数（最终生效配置）
+    # Core params
     z_window: 300
     ema_alpha: 0.2
     use_tick_rule: true
     warmup_min: 5
-    
-    # Z-score参数
     z_mode: "delta"
-    
-    # 尺度配置（Step 1稳健尺度地板）
+    # Robust scale (EWMA floor)
     scale_mode: "ewma"
     ewma_fast_hl: 80
     mad_window_trades: 300
@@ -434,1135 +205,300 @@ components:
     scale_fast_weight: 0.30
     scale_slow_weight: 0.70
     mad_multiplier: 1.30
-    
-    # 窗口和半衰期
     half_life_trades: 600
     winsor_limit: 8.0
-    
-    # 冻结配置
+    # Freezing & stale handling
     freeze_min: 25
     stale_threshold_ms: 5000
     soft_freeze_ms: 4000
     hard_freeze_ms: 5000
     post_stale_freeze: 2
-  
-  # OFI (Order Flow Imbalance) 组件
+
   ofi:
-    # 是否启用
     enabled: true
-    
-    # OFI配置文件路径
+    description: "Order Flow Imbalance (5-level weighted, EMA + Z)"
     config_file: "binance_config.yaml"
-    
-    # 描述
-    description: "订单流失衡计算和信号分析"
-    
-    # OFI计算参数
     levels: 5
     weights: [0.4, 0.25, 0.2, 0.1, 0.05]
     z_window: 300
     ema_alpha: 0.2
-  
-  # AI 组件
-  ai:
-    # 是否启用（当前阶段未启用）
-    enabled: false
-    
-    # AI模型目录
-    models_dir: "models"
-    
-    # 描述
-    description: "机器学习模型训练和预测（Stage3）"
-  
-  # 交易组件
-  trading:
-    # 是否启用（当前阶段未启用）
-    enabled: false
-    
-    # 交易配置文件
-    config_file: "trading.yaml"
-    
-    # 描述
-    description: "实盘交易执行和风险管理（Stage2）"
 
-# ============================================================================
-# 路径配置
-# ============================================================================
+  ai:
+    enabled: false
+    models_dir: "models"
+    description: "ML models (Stage 3)"
+
+  trading:
+    enabled: false
+    config_file: "trading.yaml"
+    description: "Execution & risk (Stage 2)"
+
+# ================================ Paths & Logging ================================
 paths:
-  # 数据目录
   data_dir: "data"
-  
-  # 日志目录
   logs_dir: "logs"
-  
-  # 报告目录
   reports_dir: "docs/reports"
-  
-  # AI模型目录
   models_dir: "models"
-  
-  # 配置目录
   config_dir: "config"
-  
-  # 归档目录
   archive_dir: "../archive"
-  
-  # 临时文件目录
   temp_dir: "temp"
 
-# ============================================================================
-# 性能配置
-# ============================================================================
-performance:
-  # 队列配置
-  queue:
-    # 最大队列大小
-    max_size: 50000
-    
-    # 队列满时的行为: block | drop_old | drop_new
-    # block: 阻塞等待（分析模式）
-    # drop_old: 丢弃旧消息（实时模式）
-    # drop_new: 丢弃新消息（不推荐）
-    full_behavior: "block"
-  
-  # 批处理配置
-  batch:
-    # 批处理大小
-    size: 1000
-    
-    # 批处理超时（毫秒）
-    timeout_ms: 200
-  
-  # 刷新配置
-  flush:
-    # Watermark缓冲区刷新间隔（毫秒）
-    watermark_interval_ms: 200
-    
-    # 指标刷新间隔（毫秒）
-    metrics_interval_ms: 10000
-    
-    # 数据刷新间隔（毫秒）
-    data_interval_ms: 60000
-  
-  # 打印/日志频率
-  logging:
-    # 诊断信息打印频率（每N笔交易）
-    print_every_trades: 1000
-    
-    # 进度打印频率（秒）
-    progress_interval_seconds: 60
-
-# ============================================================================
-# 日志配置
-# ============================================================================
 logging:
-  # 日志级别: DEBUG | INFO | WARNING | ERROR | CRITICAL
   level: "INFO"
-  
-  # 分模式日志级别（策略模式切换时会动态调整）
-  level_by_mode:
-    active: "INFO"
-    quiet: "INFO"
-  
-  # 日志格式
+  level_by_mode: { active: "INFO", quiet: "INFO" }
   format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-  
-  # 日期格式
   date_format: "%Y-%m-%d %H:%M:%S"
-  
-  # 日志文件配置
-  file:
-    # 是否启用文件日志
-    enabled: true
-    
-    # 日志文件路径（相对于logs_dir）
-    filename: "system.log"
-    
-    # 单个日志文件最大大小（MB）
-    max_size_mb: 100
-    
-    # 日志文件备份数量
-    backup_count: 5
-  
-  # 控制台日志配置
-  console:
-    # 是否启用控制台日志
-    enabled: true
-    
-    # 控制台日志级别（可以与文件日志级别不同）
-    level: "INFO"
+  file: { enabled: true, filename: "system.log", max_size_mb: 100, backup_count: 5 }
+  console: { enabled: true, level: "INFO" }
 
-# ============================================================================
-# 监控配置
-# ============================================================================
+# ================================ Monitoring ================================
 monitoring:
-  # 是否启用监控
   enabled: true
-  
-  # 监控指标收集间隔（秒）
   interval_seconds: 10
-  
-  # 指标类型
   metrics:
-    # 系统指标
-    system:
-      - "cpu_usage"
-      - "memory_usage"
-      - "disk_usage"
-    
-    # 应用指标
-    application:
-      - "queue_size"
-      - "processing_rate"
-      - "latency"
-      - "error_rate"
-    
-    # 业务指标
-    business:
-      - "trade_count"
-      - "cvd_value"
-      - "ofi_value"
-      - "signal_count"
-  
-  # Prometheus配置
-  prometheus:
-    port: 8003
-    path: "/metrics"
-    scrape_interval: "5s"
-  
-  # 背离检测指标端口
-  divergence_metrics:
-    port: 8004
-    path: "/metrics"
-    env: "testing"
-  
-  # 融合指标端口
-  fusion_metrics:
-    port: 8005
-    path: "/metrics"
+    system: [ "cpu_usage", "memory_usage", "disk_usage" ]
+    application: [ "queue_size", "processing_rate", "latency", "error_rate" ]
+    business: [ "trade_count", "cvd_value", "ofi_value", "signal_count" ]
+  prometheus: { port: 8003, path: "/metrics", scrape_interval: "5s" }
+  divergence_metrics: { port: 8004, path: "/metrics", env: "testing" }
+  fusion_metrics: { port: 8005, path: "/metrics" }
 
-# ============================================================================
-# 策略模式管理器配置
-# ============================================================================
+# ================================ Strategy Mode (3-regimes + 2×2 scenarios) ================================
 strategy_mode:
-  # 默认模式
-  default_mode: "auto"  # auto | active | quiet
-  
-  # 迟滞配置
-  hysteresis:
-    window_secs: 60
-    min_active_windows: 3
-    min_quiet_windows: 6
-  
-  # 触发器配置
+  default_mode: "auto"   # auto | active | quiet
+  hysteresis: { window_secs: 60, min_active_windows: 3, min_quiet_windows: 6 }
+
   triggers:
-    # 时间表触发器
     schedule:
       enabled: true
       timezone: "Asia/Hong_Kong"
       calendar: "CRYPTO"
-      enabled_weekdays: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+      enabled_weekdays: ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"]
       holidays: []
       active_windows:
-        - start: "09:00"
-          end: "16:00"
-          timezone: "Asia/Hong_Kong"
-        - start: "20:00"
-          end: "02:00"
-          timezone: "Asia/Hong_Kong"
+        - { start: "09:00", end: "16:00", timezone: "Asia/Hong_Kong" }
+        - { start: "20:00", end: "02:00", timezone: "Asia/Hong_Kong" }
       wrap_midnight: true
-    
-    # 市场触发器 - 二阶段准入策略
     market:
       enabled: true
       window_secs: 60
-      # 第一阶段：基础准入门槛（按数据密度重标化）
-      min_trades_per_min: 20           # 50 → 20 (按73条/分钟数据密度重标化)
-      min_quote_updates_per_sec: 5    # 10 → 5 (按实际数据密度重标化)
-      max_spread_bps: 15              # 12 → 15 (进一步放宽点差要求)
-      min_volatility_bps: 0.5         # 1 → 0.5 (进一步降低波动要求)
-      min_volume_usd: 20000           # 50000 → 20000 (按数据密度重标化)
+      # Stage-1 base gate
+      min_trades_per_min: 20
+      min_quote_updates_per_sec: 5
+      max_spread_bps: 15
+      min_volatility_bps: 0.5
+      min_volume_usd: 20000
       use_median: true
       winsorize_percentile: 95
-      
-      # 第二阶段：质量过滤门槛（按场景差异化，重标化）
+      # Stage-2 quality filters
       quality_filters:
-        active:
-          min_trades_per_min: 40      # Active模式：按数据密度重标化
-          min_quote_updates_per_sec: 10
-          max_spread_bps: 10
-          min_volatility_bps: 1.0
-          min_volume_usd: 50000
-        normal:
-          min_trades_per_min: 30      # Normal模式：按数据密度重标化
-          min_quote_updates_per_sec: 8
-          max_spread_bps: 12
-          min_volatility_bps: 0.8
-          min_volume_usd: 30000
-        quiet:
-          min_trades_per_min: 20      # Quiet模式：按数据密度重标化
-          min_quote_updates_per_sec: 5
-          max_spread_bps: 15
-          min_volatility_bps: 0.5
-          min_volume_usd: 20000
-  
-  # === gating ===
-  weak_signal_threshold: 0.12   # 弱信号门槛（从0.05提升到0.12，提高确认率）
+        active: { min_trades_per_min: 40, min_quote_updates_per_sec: 10, max_spread_bps: 10, min_volatility_bps: 1.0, min_volume_usd: 50000 }
+        normal: { min_trades_per_min: 30, min_quote_updates_per_sec: 8,  max_spread_bps: 12, min_volatility_bps: 0.8, min_volume_usd: 30000 }
+        quiet:  { min_trades_per_min: 20, min_quote_updates_per_sec: 5,  max_spread_bps: 15, min_volatility_bps: 0.5, min_volume_usd: 20000 }
 
-  # === scenario thresholds (2x2) ===
+  weak_signal_threshold: 0.10
+
+  # 2×2 scenario parameters (+ per-scenario calculator knobs)
   scenario_parameters:
-    A_H:
-      Z_HI_LONG: 2.5
-      Z_HI_SHORT: -2.5
-      Z_MID: 1.5
-      TP_BPS: 25
-      SL_BPS: 12
-      min_hold_time_sec: 30      # 保守持仓时间，避免高频滑点/手续费
-      consistency_min: 0.45      # 与融合器对齐
-    A_L:
-      Z_HI_LONG: 2.0
-      Z_HI_SHORT: -2.0
-      Z_MID: 1.2
-      TP_BPS: 18
-      SL_BPS: 10
-      min_hold_time_sec: 20      # 保守持仓时间
-      consistency_min: 0.40      # 与融合器对齐
-    Q_H:
-      Z_HI_LONG: 1.8
-      Z_HI_SHORT: -1.8
-      Z_MID: 1.0
-      TP_BPS: 15
-      SL_BPS: 8
-      min_hold_time_sec: 15      # 保守持仓时间
-      consistency_min: 0.55      # Quiet场景要求更高一致性
-    Q_L:
-      Z_HI_LONG: 1.5
-      Z_HI_SHORT: -1.5
-      Z_MID: 0.8
-      TP_BPS: 12
-      SL_BPS: 6
-      min_hold_time_sec: 10      # 保守持仓时间
-      consistency_min: 0.50      # Quiet场景要求更高一致性
+    A_H: { Z_HI_LONG: 1.5, Z_HI_SHORT: -1.5, Z_MID: 1.0, TP_BPS: 25, SL_BPS: 12, min_hold_time_sec: 20, consistency_min: 0.50, ofi_z_window: 180, cvd_freeze_min: 25, min_consecutive: 2 }
+    A_L: { Z_HI_LONG: 1.3, Z_HI_SHORT: -1.3, Z_MID: 0.8, TP_BPS: 20, SL_BPS: 10, min_hold_time_sec: 15, consistency_min: 0.45, ofi_z_window: 200, cvd_freeze_min: 25, min_consecutive: 2 }
+    Q_H: { Z_HI_LONG: 1.0, Z_HI_SHORT: -1.0, Z_MID: 0.6, TP_BPS: 15, SL_BPS: 8,  min_hold_time_sec: 10, consistency_min: 0.40, ofi_z_window: 260, cvd_freeze_min: 40, min_consecutive: 2 }
+    Q_L: { Z_HI_LONG: 0.8, Z_HI_SHORT: -0.8, Z_MID: 0.5, TP_BPS: 12, SL_BPS: 6,  min_hold_time_sec: 8, consistency_min: 0.35, ofi_z_window: 300, cvd_freeze_min: 40, min_consecutive: 2 }
 
-  # 特性开关
-  features:
+  features: 
     dynamic_mode_enabled: true
     dry_run: false
   
-  # 监控配置
+  # 场景切换配置
+  hysteresis:
+    window_secs: 30
+    min_active_windows: 1
+    min_quiet_windows: 1
+  
+  triggers:
+    market:
+      enabled: true
+      window_secs: 30
+      min_trades_per_min: 60            # 暂时降低
+      min_quote_updates_per_sec: 10     # 暂时降低
+      min_volatility_bps: 2             # 暂时降低
   monitoring:
-    prometheus:
-      port: 8006
-      path: "/metrics"
-      scrape_interval: "5s"
-    
+    prometheus: { port: 8006, path: "/metrics", scrape_interval: "5s" }
     alerts:
       enabled: true
       rules:
-        - name: "strategy_mode_switching_too_frequently"
-          expr: "sum(increase(strategy_mode_transitions_total[1h])) > 10"
-          for: "10m"
-          severity: "warning"
-          summary: "策略模式切换过于频繁"
-        - name: "strategy_mode_stuck_in_quiet"
-          expr: "(time() - max(strategy_mode_last_change_timestamp)) > 4*3600 and on() avg(strategy_mode_active) < 0.5"
-          for: "15m"
-          severity: "warning"
-          summary: "策略模式长期处于quiet状态"
-  
-  # 热更新配置
-  hot_reload:
-    enabled: true
-    watch_file: true
-    reload_delay: 2.0
-    backup_config: true
-    log_changes: true
+        - { name: "strategy_mode_switching_too_frequently", expr: "sum(increase(strategy_mode_transitions_total[1h])) > 10", for: "10m", severity: "warning", summary: "Mode switches too frequently" }
+        - { name: "strategy_mode_stuck_in_quiet", expr: "(time() - max(strategy_mode_last_change_timestamp)) > 4*3600 and on() avg(strategy_mode_active) < 0.5", for: "15m", severity: "warning", summary: "Stuck in quiet" }
+  hot_reload: { enabled: true, watch_file: true, reload_delay: 2.0, backup_config: true, log_changes: true }
 
-# ============================================================================
-# 信号分析配置 (Round 2 优化版)
-# ============================================================================
+# ================================ Signal Analysis (offline eval) ================================
 signal_analysis:
-  # 配置版本
   version: "v2.0"
-  description: "OFI+CVD信号分析配置 - Round 2优化版"
-  
-  # 基线配置 (Round 2 验证成功)
   baseline:
-    # 标签配置
-    labels:
-      type: "mid"  # 使用中间价标签
-      forward_direction: true  # 前瞻对齐
-    
-    # 校准配置
-    calibration:
-      method: "platt"  # Platt校准
-      train_window: 7200  # 2小时训练窗口
-      test_window: 1800  # 30分钟测试窗口
-    
-    # CVD自动翻转
+    labels: { type: "mid", forward_direction: true }
+    calibration: { method: "platt", train_window: 7200, test_window: 1800 }
     cvd_auto_flip: true
-    
-    # 合并容差
     merge_tolerance_ms: 1500
-    
-    # Fusion配置
-    fusion:
-      w_ofi: 0.6
-      w_cvd: 0.4
-      gate: 0.0  # 默认关闭门控
-  
-  # 切片覆盖配置
+    fusion: { w_ofi: 0.6, w_cvd: 0.4, gate: 0.0 }
   slice_overrides:
-    active_period:
-      fusion:
-        w_ofi: 0.7
-        w_cvd: 0.3
-        gate: 0.0
-      description: "Active时段使用OFI主导权重"
-    
-    quiet_period:
-      fusion:
-        w_ofi: 0.5
-        w_cvd: 0.5
-        gate: 0.0
-      description: "Quiet时段使用等权重"
-  
-  # 监控指标配置
+    active_period: { fusion: { w_ofi: 0.7, w_cvd: 0.3, gate: 0.0 }, description: "Active period OFI-led" }
+    quiet_period:  { fusion: { w_ofi: 0.5, w_cvd: 0.5, gate: 0.0 }, description: "Quiet period equal-weight" }
   monitoring:
     prometheus:
       port: 8010
       path: "/metrics"
       scrape_interval: "5s"
-      
-      # CVD方向指标
       cvd_direction: true
-      
-      # 合并时差分布
-      merge_time_diff:
-        p50: true
-        p90: true
-        p99: true
-      
-      # Platt校准指标
-      platt_calibration:
-        train_samples: true
-        test_samples: true
-        ece: true
-        brier: true
-      
-      # 切片AUC指标
-      slice_auc:
-        active_period: true
-        quiet_period: true
-        tokyo_session: true
-        london_session: true
-        ny_session: true
-    
-    # 告警规则
+      merge_time_diff: { p50: true, p90: true, p99: true }
+      platt_calibration: { train_samples: true, test_samples: true, ece: true, brier: true }
+      slice_auc: { active_period: true, quiet_period: true, tokyo_session: true, london_session: true, ny_session: true }
     alerts:
       enabled: true
       rules:
-        - name: "signal_analysis_cvd_direction_flipped"
-          expr: "cvd_direction_flipped_total > 0"
-          for: "1m"
-          severity: "info"
-          summary: "CVD信号方向已翻转"
-        
-        - name: "signal_analysis_merge_time_diff_high"
-          expr: "merge_time_diff_ms_p99 > 2000"
-          for: "5m"
-          severity: "warning"
-          summary: "信号合并时差过高"
-        
-        - name: "signal_analysis_platt_calibration_failure"
-          expr: "platt_calibration_failures_total > 0"
-          for: "2m"
-          severity: "warning"
-          summary: "Platt校准失败"
-        
-        - name: "signal_analysis_slice_auc_low"
-          expr: "slice_auc_active_period < 0.55"
-          for: "10m"
-          severity: "warning"
-          summary: "Active时段AUC过低"
+        - { name: "signal_analysis_cvd_direction_flipped", expr: "cvd_direction_flipped_total > 0", for: "1m", severity: "info", summary: "CVD flip" }
+        - { name: "signal_analysis_merge_time_diff_high", expr: "merge_time_diff_ms_p99 > 2000", for: "5m", severity: "warning", summary: "Merge lag high" }
+        - { name: "signal_analysis_platt_calibration_failure", expr: "platt_calibration_failures_total > 0", for: "2m", severity: "warning", summary: "Platt failed" }
+        - { name: "signal_analysis_slice_auc_low", expr: "slice_auc_active_period < 0.55", for: "10m", severity: "warning", summary: "AUC low" }
 
-# ============================================================================
-# 融合指标收集器配置
-# ============================================================================
+# ================================ Fusion Metrics Collector ================================
 fusion_metrics_collector:
-  # 基础配置
   enabled: true
-  
-  # 历史记录配置
-  history:
-    max_records: 1000
-    cleanup_interval: 300  # 5分钟清理一次
-  
-  # 收集配置
-  collection:
-    update_interval: 1.0  # 1秒更新一次
-    batch_size: 10
-    enable_warmup: true
-    warmup_samples: 50
-  
-  # 性能配置
-  performance:
-    max_collection_rate: 100  # 每秒最大收集次数
-    memory_limit_mb: 50
-    gc_threshold: 0.8  # 内存使用率超过80%时触发GC
-  
-  # 监控配置
+  history: { max_records: 1000, cleanup_interval: 300 }
+  collection: { update_interval: 1.0, batch_size: 10, enable_warmup: true, warmup_samples: 50 }
+  performance: { max_collection_rate: 100, memory_limit_mb: 50, gc_threshold: 0.8 }
   monitoring:
-    prometheus:
-      port: 8005
-      path: "/metrics"
-      scrape_interval: "5s"
-    
+    prometheus: { port: 8011, path: "/metrics", scrape_interval: "5s" }
     alerts:
       enabled: true
       rules:
-        - name: "fusion_metrics_collection_failure"
-          expr: "increase(fusion_metrics_collection_failures_total[5m]) > 0"
-          for: "2m"
-          severity: "warning"
-          summary: "融合指标收集失败"
-        - name: "fusion_metrics_memory_high"
-          expr: "fusion_metrics_memory_usage_bytes / fusion_metrics_memory_limit_bytes > 0.8"
-          for: "5m"
-          severity: "warning"
-          summary: "融合指标内存使用率过高"
-  
-  # 热更新配置
-  hot_reload:
-    enabled: true
-    watch_file: true
-    reload_delay: 1.0
-    backup_config: true
-    log_changes: true
+        - { name: "fusion_metrics_collection_failure", expr: "increase(fusion_metrics_collection_failures_total[5m]) > 0", for: "2m", severity: "warning", summary: "Collector failed" }
+        - { name: "fusion_metrics_memory_high", expr: "fusion_metrics_memory_usage_bytes / fusion_metrics_memory_limit_bytes > 0.8", for: "5m", severity: "warning", summary: "Collector memory high" }
+  hot_reload: { enabled: true, watch_file: true, reload_delay: 1.0, backup_config: true, log_changes: true }
 
-# ============================================================================
-# 交易流处理配置
-# ============================================================================
+# ================================ Trade Stream ================================
 trade_stream:
-  # 基础配置
   enabled: true
-  
-  # 队列配置
-  queue:
-    size: 1024
-    max_size: 2048
-    backpressure_threshold: 0.8
-  
-  # 打印配置
-  logging:
-    print_every: 100  # 每100条打印一次
-    stats_interval: 60.0  # 统计间隔（秒）
-    log_level: "INFO"
-  
-  # WebSocket配置
-  websocket:
-    heartbeat_timeout: 30  # 心跳超时（秒）
-    backoff_max: 15  # 最大退避时间（秒）
-    ping_interval: 20  # Ping间隔（秒）
-    close_timeout: 10  # 关闭超时（秒）
-    reconnect_delay: 1.0  # 重连延迟（秒）
-    max_reconnect_attempts: 10  # 最大重连尝试次数
-  
-  # 性能配置
-  performance:
-    watermark_ms: 1000  # 水印时间（毫秒）
-    batch_size: 10  # 批处理大小
-    max_processing_rate: 1000  # 最大处理速率（条/秒）
-    memory_limit_mb: 100  # 内存限制（MB）
-  
-  # 监控配置
+  queue: { size: 1024, max_size: 2048, backpressure_threshold: 0.8 }
+  logging: { print_every: 100, stats_interval: 60.0, log_level: "INFO" }
+  websocket: { heartbeat_timeout: 30, backoff_max: 15, ping_interval: 20, close_timeout: 10, reconnect_delay: 1.0, max_reconnect_attempts: 10 }
+  performance: { watermark_ms: 500, batch_size: 10, max_processing_rate: 1000, memory_limit_mb: 100 }  # 测试期降低到500ms
   monitoring:
-    prometheus:
-      port: 8008
-      path: "/metrics"
-      scrape_interval: "5s"
-    
+    prometheus: { port: 8008, path: "/metrics", scrape_interval: "5s" }
     alerts:
       enabled: true
       rules:
-        - name: "trade_stream_connection_failure"
-          expr: "increase(trade_stream_connection_failures_total[5m]) > 0"
-          for: "2m"
-          severity: "warning"
-          summary: "交易流连接失败"
-        - name: "trade_stream_queue_high"
-          expr: "trade_stream_queue_size / trade_stream_queue_max_size > 0.8"
-          for: "5m"
-          severity: "warning"
-          summary: "交易流队列使用率过高"
-  
-  # 热更新配置
-  hot_reload:
-    enabled: true
-    watch_file: true
-    reload_delay: 1.0
-    backup_config: true
-    log_changes: true
-  
-  # Grafana配置
-  grafana:
-    # 基础配置
-    dashboard_uid: "divergence-monitoring"
-    refresh_interval: "5s"
-    
-    # 详细配置
-    server:
-      host: "localhost"
-      port: 3000
-      protocol: "http"
-      admin_user: "admin"
-      admin_password: "admin"
-      timeout: 30
-    
-    # 仪表盘配置
-    dashboards:
-      # 策略模式仪表盘
-      strategy_mode:
-        uid: "strategy-mode-overview"
-        title: "Strategy Mode Overview"
-        description: "V1核心面板：策略模式切换监控仪表盘"
-        tags: ["strategy", "mode", "monitoring"]
-        timezone: "Asia/Hong_Kong"
-        refresh: "30s"
-        time_range: "6h"
-        
-      # 性能仪表盘
-      performance:
-        uid: "strategy-performance"
-        title: "Strategy Performance"
-        description: "策略性能监控仪表盘"
-        tags: ["strategy", "performance", "monitoring"]
-        timezone: "Asia/Hong_Kong"
-        refresh: "30s"
-        time_range: "6h"
-        
-      # 告警仪表盘
-      alerts:
-        uid: "strategy-alerts"
-        title: "Strategy Alerts"
-        description: "策略告警监控仪表盘"
-        tags: ["strategy", "alerts", "monitoring"]
-        timezone: "Asia/Hong_Kong"
-        refresh: "30s"
-        time_range: "6h"
-    
-    # 数据源配置
-    datasources:
-      prometheus:
-        name: "Prometheus"
-        type: "prometheus"
-        url: "http://localhost:9090"
-        access: "proxy"
-        is_default: true
-        editable: true
-        
-      loki:
-        name: "Loki"
-        type: "loki"
-        url: "http://localhost:3100"
-        access: "proxy"
-        editable: true
-    
-    # 变量配置
-    variables:
-      env:
-        name: "env"
-        type: "query"
-        query: "label_values(strategy_mode_active, env)"
-        refresh: 1
-        include_all: false
-        multi: false
-        default_value: "testing"
-        
-      symbol:
-        name: "symbol"
-        type: "query"
-        query: "label_values(strategy_mode_active{env=\"$env\"}, symbol)"
-        refresh: 1
-        include_all: true
-        multi: true
-        default_value: ["BTCUSDT"]
-    
-    # 告警配置
-    alerting:
-      enabled: true
-      rules:
-        # 频繁切换告警
-        frequent_switching:
-          alert: "StrategyModeSwitchingTooFrequently"
-          expr: "sum(increase(strategy_mode_transitions_total{env=\"$env\"}[1h])) > 10"
-          for: "10m"
-          severity: "warning"
-          summary: "策略模式切换过于频繁"
-          description: "过去1小时内模式切换超过10次，可能存在配置问题"
-        
-        # 长期quiet模式
-        stuck_quiet:
-          alert: "StrategyModeStuckInQuiet"
-          expr: "(time() - max(strategy_mode_last_change_timestamp{env=\"$env\"})) > 4*3600 and on() avg(strategy_mode_active{env=\"$env\"}) < 0.5"
-          for: "15m"
-          severity: "warning"
-          summary: "策略模式长期处于quiet状态"
-          description: "超过4小时未切换且当前为quiet模式"
-        
-        # 参数更新失败
-        params_update_failed:
-          alert: "StrategyParamsUpdateFailed"
-          expr: "increase(strategy_params_update_failures_total{env=\"$env\"}[5m]) > 0"
-          for: "0m"
-          severity: "critical"
-          summary: "策略参数更新失败"
-          description: "过去5分钟内参数更新失败，请检查模块状态"
-        
-        # 指标心跳异常
-        metrics_heartbeat_missing:
-          alert: "StrategyMetricsHeartbeatMissing"
-          expr: "absent(strategy_mode_active{env=\"$env\"}) or (time() - max(strategy_metrics_last_scrape_timestamp{env=\"$env\"})) > 120"
-          for: "2m"
-          severity: "critical"
-          summary: "策略指标心跳异常"
-          description: "指标缺失或超过2分钟未更新"
-    
-    # 通知渠道配置
-    notifications:
-      slack:
-        enabled: false
-        webhook_url: ""
-        channel: "#alerts"
-        
-      email:
-        enabled: false
-        smtp_host: ""
-        smtp_port: 587
-        smtp_user: ""
-        smtp_password: ""
-        from_address: ""
-        to_addresses: []
+        - { name: "trade_stream_connection_failure", expr: "increase(trade_stream_connection_failures_total[5m]) > 0", for: "2m", severity: "warning", summary: "WS failed" }
+        - { name: "trade_stream_queue_high", expr: "trade_stream_queue_size / trade_stream_queue_max_size > 0.8", for: "5m", severity: "warning", summary: "Queue high" }
+  hot_reload: { enabled: true, watch_file: true, reload_delay: 1.0, backup_config: true, log_changes: true }
 
-# ============================================================================
-# 数据库配置（未来使用）
-# ============================================================================
+# ================================ Database & Testing ================================
 database:
-  # 是否启用数据库
   enabled: false
-  
-  # 数据库类型: sqlite | postgresql | mysql
   type: "sqlite"
-  
-  # SQLite配置
-  sqlite:
-    database: "data/system.db"
-  
-  # PostgreSQL配置（示例）
-  postgresql:
-    host: "localhost"
-    port: 5432
-    database: "ofi_cvd_ai"
-    # 用户名和密码应从环境变量读取
-    # username: ${DB_USER}
-    # password: ${DB_PASSWORD}
+  sqlite: { database: "data/system.db" }
+  postgresql: { host: "localhost", port: 5432, database: "ofi_cvd_ai" }
 
-# ============================================================================
-# 测试配置
-# ============================================================================
 testing:
-  # 测试模式
-  mode: "unit"  # unit | integration | e2e
-  
-  # 测试数据目录
+  mode: "unit"
   test_data_dir: "tests/data"
-  
-  # 测试结果目录
   test_results_dir: "tests/results"
-  
-  # 是否生成测试覆盖率报告
   coverage: true
 
-# ============================================================================
-# 数据采集配置 (Task 1.3.1 v2)
-# ============================================================================
+# ================================ Data Harvest (Task 1.3.1 v2) ================================
 data_harvest:
-  # 采集模式
-  mode: "realtime"  # realtime | batch | hybrid
-  
-  # 默认交易对
+  mode: "realtime"
   symbols: ["BTCUSDT", "ETHUSDT"]
-  
-  # 运行时长（小时）
   run_hours: 72
-  
-  # Parquet文件滚动间隔（秒）
   parquet_rotate_sec: 60
-  
-  # WebSocket配置
-  websocket:
-    ping_interval: 20
-    heartbeat_timeout: 30
-    reconnect_delay: 1.0
-    max_reconnect_attempts: 10
-  
-  # 去重配置
-  deduplication:
-    lru_size: 8192
-    check_agg_trade_id: true
-  
-  # 数据质量配置
+  websocket: { ping_interval: 20, heartbeat_timeout: 30, reconnect_delay: 1.0, max_reconnect_attempts: 10 }
+  deduplication: { lru_size: 8192, check_agg_trade_id: true }
   data_quality:
-    # 预检时长（分钟）
     precheck_minutes: 10
-    
-    # 验收标准
     acceptance_criteria:
-      max_empty_bucket_rate: 0.001  # 0.1%
-      max_duplicate_rate: 0.005     # 0.5%
+      max_empty_bucket_rate: 0.001
+      max_duplicate_rate: 0.005
       max_latency_p99_ms: 120
       max_latency_p50_ms: 60
       min_events_per_72h: 1000
       min_winsor_effect: 0.1
-  
-  # 输出配置
   output:
     base_dir: "data/ofi_cvd"
     artifacts_dir: "artifacts"
     compression: "snappy"
     partition_by: ["date", "symbol", "kind"]
-    
-    # 表结构定义
     schemas:
       prices:
-        - name: "ts_ms"
-          type: "int64"
-        - name: "event_ts_ms"
-          type: "int64"
-        - name: "symbol"
-          type: "string"
-        - name: "price"
-          type: "float64"
-        - name: "qty"
-          type: "float64"
-        - name: "agg_trade_id"
-          type: "string"
-        - name: "latency_ms"
-          type: "float64"
-        - name: "recv_rate_tps"
-          type: "float64"
-      
+        - { name: "ts_ms", type: "int64" }
+        - { name: "event_ts_ms", type: "int64" }
+        - { name: "symbol", type: "string" }
+        - { name: "price", type: "float64" }
+        - { name: "qty", type: "float64" }
+        - { name: "agg_trade_id", type: "string" }
+        - { name: "latency_ms", type: "float64" }
+        - { name: "recv_rate_tps", type: "float64" }
       ofi:
-        - name: "ts_ms"
-          type: "int64"
-        - name: "symbol"
-          type: "string"
-        - name: "ofi_value"
-          type: "float64"
-        - name: "ofi_z"
-          type: "float64"
-        - name: "scale"
-          type: "float64"
-        - name: "regime"
-          type: "string"
-      
+        - { name: "ts_ms", type: "int64" }
+        - { name: "symbol", type: "string" }
+        - { name: "ofi_value", type: "float64" }
+        - { name: "ofi_z", type: "float64" }
+        - { name: "scale", type: "float64" }
+        - { name: "regime", type: "string" }
       cvd:
-        - name: "ts_ms"
-          type: "int64"
-        - name: "symbol"
-          type: "string"
-        - name: "cvd"
-          type: "float64"
-        - name: "delta"
-          type: "float64"
-        - name: "z_raw"
-          type: "float64"
-        - name: "z_cvd"
-          type: "float64"
-        - name: "scale"
-          type: "float64"
-        - name: "sigma_floor"
-          type: "float64"
-        - name: "floor_used"
-          type: "float64"
-        - name: "regime"
-          type: "string"
-      
+        - { name: "ts_ms", type: "int64" }
+        - { name: "symbol", type: "string" }
+        - { name: "cvd", type: "float64" }
+        - { name: "delta", type: "float64" }
+        - { name: "z_raw", type: "float64" }
+        - { name: "z_cvd", type: "float64" }
+        - { name: "scale", type: "float64" }
+        - { name: "sigma_floor", type: "float64" }
+        - { name: "floor_used", type: "float64" }
+        - { name: "regime", type: "string" }
       fusion:
-        - name: "ts_ms"
-          type: "int64"
-        - name: "symbol"
-          type: "string"
-        - name: "score"
-          type: "float64"
-        - name: "score_z"
-          type: "float64"
-        - name: "regime"
-          type: "string"
-      
+        - { name: "ts_ms", type: "int64" }
+        - { name: "symbol", type: "string" }
+        - { name: "score", type: "float64" }
+        - { name: "score_z", type: "float64" }
+        - { name: "regime", type: "string" }
       events:
-        - name: "ts_ms"
-          type: "int64"
-        - name: "symbol"
-          type: "string"
-        - name: "event_type"
-          type: "string"
-        - name: "meta_json"
-          type: "string"
-  
-  # 监控配置
+        - { name: "ts_ms", type: "int64" }
+        - { name: "symbol", type: "string" }
+        - { name: "event_type", type: "string" }
+        - { name: "meta_json", type: "string" }
   monitoring:
-    prometheus:
-      port: 8009
-      path: "/metrics"
-      scrape_interval: "5s"
-    
-    # 告警规则
+    prometheus: { port: 8009, path: "/metrics", scrape_interval: "5s" }
     alerts:
-      latency_high:
-        condition: "latency_ms_p99 > 120"
-        duration: "10m"
-        severity: "warning"
-        description: "延迟过高"
-      
-      reconnect_frequent:
-        condition: "ws_reconnects_total > 10"
-        duration: "1h"
-        severity: "warning"
-        description: "WebSocket重连频繁"
-      
-      floor_hit_high:
-        condition: "cvd_floor_hit_rate > 0.6"
-        duration: "15m"
-        severity: "warning"
-        description: "CVD Floor命中率过高"
-      
-      empty_buckets_high:
-        condition: "empty_bucket_rate > 0.005"
-        duration: "1h"
-        severity: "critical"
-        description: "空桶率过高"
-  
-  # 稳定性配置
+      latency_high: { condition: "latency_ms_p99 > 120", duration: "10m", severity: "warning", description: "Latency high" }
+      reconnect_frequent: { condition: "ws_reconnects_total > 10", duration: "1h", severity: "warning", description: "WS reconnects frequent" }
+      floor_hit_high: { condition: "cvd_floor_hit_rate > 0.6", duration: "15m", severity: "warning", description: "CVD floor high" }
+      empty_buckets_high: { condition: "empty_bucket_rate > 0.005", duration: "1h", severity: "critical", description: "Empty buckets high" }
   stability:
-    # 检查点配置
-    checkpoint:
-      enabled: true
-      file: "artifacts/state/checkpoint.json"
-      save_interval_sec: 60
-    
-    # 自动恢复配置
-    auto_recovery:
-      enabled: true
-      max_retries: 3
-      retry_delay_sec: 5
-    
-    # 错误处理
-    error_handling:
-      max_errors_per_hour: 100
-      error_cooldown_sec: 300
-      skip_on_error: true  # 错误时跳过而不中断流
+    checkpoint: { enabled: true, file: "artifacts/state/checkpoint.json", save_interval_sec: 60 }
+    auto_recovery: { enabled: true, max_retries: 3, retry_delay_sec: 5 }
+    error_handling: { max_errors_per_hour: 100, error_cooldown_sec: 300, skip_on_error: true }
 
-# ============================================================================
-# 策略模式与差异化配置（数字资产市场）
-# ============================================================================
-# 注意：此配置已废弃，请使用 strategy_mode 配置
-# 保留此配置仅作为风控参数参考
-strategy:
-  name: "ofi_cvd"
-  
-  # 模式选择: auto（自动切换）| active（固定活跃）| quiet（固定安静）
-  mode: "auto"
-  
-  # 迟滞与去抖配置 - 进攻版设置（减少保守性）
-  hysteresis:
-    window_secs: 60           # 评估窗口长度（秒）
-    min_active_windows: 2     # 3 → 2 (减少active确认窗口)
-    min_quiet_windows: 4      # 6 → 4 (减少quiet确认窗口)
-  
-  # 触发器配置
-  triggers:
-    # 时间表触发器
-    schedule:
-      enabled: true
-      timezone: "Asia/Hong_Kong"      # 香港时区 (HKT, UTC+8)
-      wrap_midnight: true              # 支持跨午夜窗口
-      calendar: "CRYPTO"               # 交易日历: CRYPTO (24/7) | HK | CN | US
-      enabled_weekdays: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]  # 数字资产7x24
-      holidays: []                     # 数字资产无节假日
-      active_windows:                  # 活跃时段（HKT）
-        - "09:00-12:00"                # 亚洲早盘高峰
-        - "14:00-17:00"                # 亚洲午后
-        - "21:00-02:00"                # 欧美高峰（跨午夜，最重要）
-        - "06:00-08:00"                # 美洲夜盘尾盘
-    
-    # 市场活跃度触发器 - 进攻版配置（扩大场景覆盖）
-    market:
-      enabled: true
-      window_secs: 60                  # 滑动窗口长度
-      min_trades_per_min: 80           # 从150降至80，校正入场时段
-      min_quote_updates_per_sec: 20    # 从40降至20，放宽报价更新要求
-      max_spread_bps: 5                # 保持5 (点差要求合理)
-      min_volatility_bps: 2            # 从4降至2，放宽波动要求
-      min_volume_usd: 100000           # 从200000降至100000，放宽成交量要求
-      winsorize_percentile: 95         # 保持95 (尖峰过滤合理)
-      use_median: true                 # 使用中位数替代平均值（稳健估计）
-  
-  # 分模式参数配置
-  params:
-    # OFI 参数
-    ofi:
-      active:
-        bucket_ms: 50                  # 更短的bucket（数字资产高频）
-        depth_levels: 15               # 更深的订单簿深度
-        watermark_ms: 200              # 更短的水位线（低延迟）
-        freeze_ms: 0
-        min_qty: 0
-      quiet:
-        bucket_ms: 500                 # 更长的bucket（降低噪声）
-        depth_levels: 5                # 浅订单簿（避免虚假信号）
-        watermark_ms: 2000             # 更长的水位线（等待稳定）
-        freeze_ms: 100
-        min_qty: 0
-    
-    # CVD 参数
-    cvd:
-      active:
-        window_ticks: 1000             # 更短的窗口（快速反应）
-        ema_span: 30                   # 更短的EMA（捕捉短期趋势）
-        denoise_sigma: 1.5             # 较小的去噪（保留信号）
-        half_life_trades: 200
-        winsor_limit: 8.0
-        freeze_min: 50
-      quiet:
-        window_ticks: 10000            # 更长的窗口（平滑噪声）
-        ema_span: 300                  # 更长的EMA（过滤假信号）
-        denoise_sigma: 4.0             # 更大的去噪（强过滤）
-        half_life_trades: 500
-        winsor_limit: 6.0
-        freeze_min: 100
-    
-    # 风控参数
-    risk:
-      active:
-        position_limit: 1.5            # 较大的仓位（高流动性支持）
-        order_rate_limit_per_min: 1000 # 更高的下单频率
-      quiet:
-        position_limit: 0.1            # 极小的仓位（避免冲击）
-        order_rate_limit_per_min: 20   # 极低的下单频率
-      
-      # 风险管理策略（新增）
-      stop_loss:
-        enabled: true
-        # 对称止损策略
-        symmetric_stop_loss_bps: 20     # 对称止损：20bps
-        # 分级止盈策略
-        take_profit_levels:
-          level1:
-            profit_bps: 10              # 第一级止盈：10bps
-            close_ratio: 0.3            # 平仓30%
-          level2:
-            profit_bps: 20              # 第二级止盈：20bps
-            close_ratio: 0.5            # 平仓50%
-          level3:
-            profit_bps: 40              # 第三级止盈：40bps
-            close_ratio: 1.0            # 全部平仓
-        # 时间止损
-        time_stop_loss_secs: 300       # 5分钟时间止损
-        # 动态止损（基于波动率）
-        dynamic_stop_loss:
-          enabled: true
-          volatility_multiplier: 2.0    # 波动率倍数
-          min_stop_loss_bps: 10        # 最小止损
-          max_stop_loss_bps: 50        # 最大止损
-    
-    # 性能参数
-    performance:
-      active:
-        flush_metrics_interval_ms: 5000
-        print_every: 1000
-      quiet:
-        flush_metrics_interval_ms: 15000
-        print_every: 5000
-
-# ============================================================================
-# 特性开关（Feature Flags）
-# ============================================================================
+# ================================ Feature Flags ================================
 features:
-  # 是否启用新配置系统（本配置文件）
-  use_system_config: true  # 已启用
-  
-  # 是否启用详细日志
+  use_system_config: true
   verbose_logging: false
-  
-  # 是否启用性能分析
   profiling: false
-  
-  # 是否启用实验性功能
   experimental: false
-  
-  # 策略特性
   strategy:
-    dynamic_mode_enabled: true         # 启用动态模式切换
-    throttle_in_quiet: true            # 安静期降采样/限速
-    sample_ratio_quiet: 0.3            # 安静期采样比例
-    dry_run: false                     # 干跑模式（仅打印，不切换参数）
-    cli_override_priority: true        # CLI 参数优先级高于文件配置
+    dynamic_mode_enabled: true
+    throttle_in_quiet: true
+    sample_ratio_quiet: 0.3
+    dry_run: false
+    cli_override_priority: true
 
-# ============================================================================
-# 通知配置（未来使用）
-# ============================================================================
+# ================================ Notifications ================================
 notifications:
-  # 是否启用通知
   enabled: false
-  
-  # 通知方式: email | slack | telegram | webhook
-  channels:
-    - email
-  
-  # 邮件配置
-  email:
-    smtp_server: "smtp.gmail.com"
-    smtp_port: 587
-    # 凭据应从环境变量读取
-    # username: ${EMAIL_USER}
-    # password: ${EMAIL_PASSWORD}
-    # to_addresses:
-    #   - "admin@example.com"
+  channels: [ email ]
+  email: { smtp_server: "smtp.gmail.com", smtp_port: 587 }
 
-# ============================================================================
-# 安全配置
-# ============================================================================
+# ================================ Security ================================
 security:
-  # API密钥加密
   encrypt_api_keys: true
-  
-  # 敏感数据脱敏
   mask_sensitive_data: true
-  
-  # 允许的IP地址（空表示允许所有）
   allowed_ips: []
-  
-  # 速率限制
-  rate_limiting:
-    enabled: false
-    max_requests_per_minute: 100
-
-# ============================================================================
-# 备注
-# ============================================================================
-# 1. 环境变量覆盖：所有配置都可以通过环境变量覆盖
-#    格式：SECTION_KEY（大写，用下划线连接）
-#    例如：PERFORMANCE_QUEUE_MAX_SIZE=10000
-#
-# 2. 环境特定配置：通过 config/environments/{ENV}.yaml 覆盖
-#    开发环境：ENV=development
-#    测试环境：ENV=testing
-#    生产环境：ENV=production
-#
-# 3. 配置优先级：环境变量 > 环境配置 > 系统配置 > 默认值
-#
-# 4. 敏感信息：API密钥、密码等应通过环境变量设置，不要写入配置文件
-#
-# 5. 路径：相对路径会自动转换为相对于项目根目录的绝对路径
-
+  rate_limiting: { enabled: false, max_requests_per_minute: 100 }

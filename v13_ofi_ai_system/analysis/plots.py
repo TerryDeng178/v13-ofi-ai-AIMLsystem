@@ -211,7 +211,26 @@ class PlotGenerator:
                 if not signal_values:
                     ax.text(0.5, 0.5, f'{signal_type}信号数据为空', ha='center', va='center', transform=ax.transAxes)
                     continue
-                ax.hist(signal_values, bins=50, alpha=0.7, density=True)
+                
+                # 处理OFI信号边界重复问题
+                import numpy as np
+                vals = np.asarray(signal_values)
+                vals = vals[~np.isnan(vals)]
+                
+                if len(vals) == 0:
+                    ax.text(0.5, 0.5, f'{signal_type}信号数据无效', ha='center', va='center', transform=ax.transAxes)
+                    continue
+                
+                # 使用自动bins或处理重复边界
+                try:
+                    ax.hist(vals, bins='auto', alpha=0.7, density=True)
+                except ValueError as e:
+                    if "Bin edges must be unique" in str(e):
+                        # 添加微小抖动处理重复边界
+                        vals += 1e-12 * np.random.randn(len(vals))
+                        ax.hist(vals, bins='auto', alpha=0.7, density=True)
+                    else:
+                        raise
                 ax.set_xlabel('Signal Value')
                 ax.set_ylabel('Density')
                 ax.set_title(f'{signal_type.upper()} Signal Distribution')
@@ -270,14 +289,13 @@ class PlotGenerator:
             hours = np.arange(24)
             event_counts = [events_data['events_per_hour']] * 24  # 基于真实数据
             ax1.bar(hours, event_counts, alpha=0.7, label='Real Data')
-        else:
+        elif events_data and 'hourly_counts' in events_data:
             hours = np.arange(24)
-            # 强制真实数据，无数据则显示提示
-            if not events_data or 'hourly_counts' not in events_data:
-                ax1.text(0.5, 0.5, '无小时事件数据', ha='center', va='center', transform=ax1.transAxes)
-            else:
-                event_counts = events_data['hourly_counts']
-            ax1.bar(hours, event_counts, alpha=0.7, label='Sample Data')
+            event_counts = events_data['hourly_counts']
+            ax1.bar(hours, event_counts, alpha=0.7, label='Real Data')
+        else:
+            # 无真实数据则显示提示
+            ax1.text(0.5, 0.5, '无小时事件数据', ha='center', va='center', transform=ax1.transAxes)
         ax1.set_xlabel('Hour of Day')
         ax1.set_ylabel('Event Count')
         ax1.set_title('Divergence Events by Hour')
@@ -288,13 +306,12 @@ class PlotGenerator:
         if events_data and 'post_event_returns' in events_data:
             returns = events_data['post_event_returns']  # 真实数据
             ax2.hist(returns, bins=50, alpha=0.7, density=True, label='Real Data')
+        elif events_data and 'returns' in events_data:
+            returns = events_data['returns']
+            ax2.hist(returns, bins=50, alpha=0.7, density=True, label='Real Data')
         else:
-            # 强制真实数据，无数据则显示提示
-            if not events_data or 'returns' not in events_data:
-                ax2.text(0.5, 0.5, '无收益数据', ha='center', va='center', transform=ax2.transAxes)
-            else:
-                returns = events_data['returns']
-            ax2.hist(returns, bins=50, alpha=0.7, density=True, label='Sample Data')
+            # 无真实数据则显示提示
+            ax2.text(0.5, 0.5, '无收益数据', ha='center', va='center', transform=ax2.transAxes)
         ax2.axvline(0, color='red', linestyle='--', alpha=0.7)
         ax2.set_xlabel('Return')
         ax2.set_ylabel('Density')
@@ -308,9 +325,8 @@ class PlotGenerator:
             counts = list(events_data['event_types'].values())
             ax3.bar(event_types, counts, alpha=0.7, label='Real Data')
         else:
-            event_types = ['anomaly', 'divergence', 'conflict']
-            counts = [100, 20, 5]
-            ax3.bar(event_types, counts, alpha=0.7, label='Sample Data')
+            # 无真实数据则显示提示
+            ax3.text(0.5, 0.5, '无事件类型数据', ha='center', va='center', transform=ax3.transAxes)
         ax3.set_xlabel('Event Type')
         ax3.set_ylabel('Count')
         ax3.set_title('Event Type Distribution')
@@ -323,7 +339,7 @@ class PlotGenerator:
             win_rates = events_data['win_rates']  # 真实数据
             ax4.plot(horizons, win_rates, 'o-', linewidth=2, markersize=8, label='Real Data')
         else:
-            # 强制真实数据，无数据则显示提示
+            # 无真实数据则显示提示
             ax4.text(0.5, 0.5, '无胜率数据', ha='center', va='center', transform=ax4.transAxes)
         ax4.axhline(0.5, color='red', linestyle='--', alpha=0.7, label='Random')
         ax4.set_xlabel('Horizon (seconds)')

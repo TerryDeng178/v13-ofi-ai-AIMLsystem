@@ -107,22 +107,89 @@ class PaperTradingSimulator:
         # 是否允许在Core未confirm时，以场景阈值作为入场备选（默认关闭，保持单一口径）
         self.allow_scenario_entry_fallback = False
         
-    def initialize(self):
+    def initialize(self, compat_global_config: bool = False):
         """初始化模拟器"""
         print("[INIT] Initializing paper trading simulator...")
         
         try:
-            # 加载统一配置
-
-            cfg = UnifiedConfigLoader(base_dir=os.environ.get("CONFIG_DIR", "config"))
+            # 加载统一配置（支持严格运行时模式）
+            compat_env = os.getenv('V13_COMPAT_GLOBAL_CONFIG', 'false').lower() in ('true', '1', 'yes')
+            use_compat = compat_global_config or compat_env
+            
+            if not use_compat:
+                # 严格模式：从运行时包加载
+                try:
+                    from v13conf.strict_mode import load_strict_runtime_config
+                    runtime_pack_path = os.getenv(
+                        'V13_STRATEGY_RUNTIME_PACK',
+                        str(PROJECT_ROOT / 'dist' / 'config' / 'strategy.runtime.current.yaml')
+                    )
+                    cfg_dict = load_strict_runtime_config(runtime_pack_path, compat_global_config=False, verify_scenarios_snapshot=True)
+                    
+                    # 保存完整配置字典供库式注入使用
+                    self.system_config = cfg_dict
+                    
+                    # 打印来源统计和场景快照指纹（P1修复：启动日志）
+                    if '__meta__' in cfg_dict:
+                        meta = cfg_dict['__meta__']
+                        print(f"[严格模式] 从运行时包加载配置: {runtime_pack_path}")
+                        print(f"  版本: {meta.get('version', 'unknown')}")
+                        print(f"  Git SHA: {meta.get('git_sha', 'unknown')}")
+                        print(f"  组件: {meta.get('component', 'unknown')}")
+                        print(f"  来源统计: {meta.get('source_layers', {})}")
+                        
+                        # Strategy组件打印场景快照指纹
+                        if 'scenarios_snapshot_sha256' in cfg_dict:
+                            sha = cfg_dict.get('scenarios_snapshot_sha256', '')
+                            print(f"  场景快照指纹: {sha[:8]}...")
+                    
+                    # 包装为类似UnifiedConfigLoader的接口（向后兼容）
+                    class RuntimeConfigWrapper:
+                        def __init__(self, cfg):
+                            self._cfg = cfg
+                        def get(self, key, default=None):
+                            keys = key.split('.')
+                            current = self._cfg
+                            for k in keys:
+                                if isinstance(current, dict) and k in current:
+                                    current = current[k]
+                                else:
+                                    return default
+                            return current
+                        def __getitem__(self, key):
+                            return self._cfg[key]
+                    
+                    cfg = RuntimeConfigWrapper(cfg_dict)
+                except Exception as e:
+                    print(f"[WARNING] 严格模式加载失败，降级到兼容模式: {e}")
+                    cfg = UnifiedConfigLoader(base_dir=os.environ.get("CONFIG_DIR", "config"))
+            else:
+                # 兼容模式：从全局配置加载
+                from v13conf.loader import load_config
+                full_config, _ = load_config(base_dir=os.environ.get("CONFIG_DIR", "config"))
+                self.system_config = full_config
+                cfg = UnifiedConfigLoader(base_dir=os.environ.get("CONFIG_DIR", "config"))
+            
             print("SUCCESS Config loaded successfully")
-            # 初始化核心算法
+            
+            # 初始化核心算法（库式注入：传递完整system_config）
             signal_config = SignalConfig()
-            self.core_algo = CoreAlgorithm(self.symbol, signal_config, config_loader=cfg)
+            # 如果使用严格模式，直接传递system_config字典；否则传递config_loader
+            if not use_compat and hasattr(self, 'system_config'):
+                # 严格模式：直接传递system_config，CoreAlgorithm内部会使用库式注入
+                self.core_algo = CoreAlgorithm(self.symbol, signal_config, config_loader=self.system_config)
+            else:
+                # 兼容模式：使用config_loader
+                self.core_algo = CoreAlgorithm(self.symbol, signal_config, config_loader=cfg)
             print("SUCCESS Core algorithm initialized successfully")
             
-            # 初始化StrategyModeManager（统一配置来源）
-            self.manager = StrategyModeManager(config_loader=cfg)
+            # 初始化StrategyModeManager（库式注入）
+            if not use_compat and hasattr(self, 'system_config'):
+                components_cfg = self.system_config.get('components', {})
+                strategy_cfg = components_cfg.get('strategy', {})
+                self.manager = StrategyModeManager(runtime_cfg={'strategy': strategy_cfg})
+            else:
+                self.manager = StrategyModeManager(config_loader=cfg)
             print("SUCCESS StrategyModeManager initialized successfully")
             
             # 加载场景参数
@@ -1486,11 +1553,34 @@ class PaperTradingSimulator:
 
 def main():
     """主函数"""
-    # 设置统一日志（仅在入口调用，不在import顶层）
-    from logging_setup import setup_logging
-    logger = setup_logging(os.getenv("V13_OUTPUT_DIR", "./runtime") + "/logs", "INFO")
+    import argparse
+    parser = argparse.ArgumentParser(description='纸上交易模拟器')
+    parser.add_argument('--compat-global-config', action='store_true',
+                       help='启用兼容模式：从全局配置目录加载，而非运行时包（临时过渡选项）')
+    parser.add_argument('--log-level', type=str, default='INFO',
+                       choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
+                       help='日志级别（默认：INFO）')
+    args = parser.parse_args()
+    
+    # 设置统一日志（仅在入口调用，不在import顶层，安全降级）
+    try:
+        from logging_setup import setup_logging  # 本地/可选
+        log_level = args.log_level if hasattr(args, 'log_level') else "INFO"
+        logger = setup_logging(os.getenv("V13_OUTPUT_DIR", "./runtime") + "/logs", log_level)
+    except ModuleNotFoundError:
+        # 回退到标准库，确保可运行（上线前必做微修）
+        import logging as logging_setup
+        log_level = args.log_level if hasattr(args, 'log_level') else os.getenv("LOG_LEVEL", "INFO").upper()
+        logging_setup.basicConfig(
+            level=getattr(logging_setup, log_level, logging_setup.INFO),
+            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        )
+        logger = logging_setup.getLogger(__name__)
+        logger.info("[降级] 使用标准库logging，logging_setup模块不可用")
     
     print("启动纸上交易模拟器（集成核心算法+2×2场景化）")
+    if args.compat_global_config:
+        print("[兼容模式] 使用全局配置目录（临时过渡选项）")
     
     try:
         # 创建模拟器
@@ -1500,7 +1590,7 @@ def main():
         
         # 初始化
         print("初始化模拟器...")
-        simulator.initialize()
+        simulator.initialize(compat_global_config=args.compat_global_config)
         print("成功 模拟器初始化成功")
         
         # 运行模拟 - 24小时测试
@@ -1536,10 +1626,22 @@ def main():
     return True
 
 if __name__ == "__main__":
-    # 统一日志初始化（在程序入口调用）
-    from logging_setup import setup_logging
-    import os
-    logger = setup_logging(os.path.join(os.getenv("V13_OUTPUT_DIR", "./runtime"), "logs"), "INFO")
+    # 统一日志初始化（在程序入口调用，安全降级）
+    try:
+        from logging_setup import setup_logging  # 本地/可选
+        import os
+        logger = setup_logging(os.path.join(os.getenv("V13_OUTPUT_DIR", "./runtime"), "logs"), "INFO")
+    except ModuleNotFoundError:
+        # 回退到标准库，确保可运行（上线前必做微修）
+        import logging as logging_setup
+        import os
+        log_level = os.getenv("LOG_LEVEL", "INFO").upper()
+        logging_setup.basicConfig(
+            level=getattr(logging_setup, log_level, logging_setup.INFO),
+            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        )
+        logger = logging_setup.getLogger(__name__)
+        logger.info("[降级] 使用标准库logging，logging_setup模块不可用")
     
     print("开始测试纸上交易模拟器...")
     try:

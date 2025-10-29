@@ -59,3 +59,8 @@ class BinanceWebSocketAdapter:
                 on_reconnect(symbol)
             raise
 
+
+
+
+
+

@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Optional, Dict, Any, List, Union
 import math
 import time
+import logging
 from enum import Enum
 from pathlib import Path
 
@@ -32,27 +33,37 @@ class OFICVDFusionConfig:
     w_ofi: float = 0.6
     w_cvd: float = 0.4
     
-    # 信号阈值 - 进攻版配置（提升交易频率）
-    fuse_buy: float = 1.2          # 1.5 → 1.2 (降低买入门槛)
-    fuse_strong_buy: float = 2.0   # 2.5 → 2.0 (降低强买入门槛)
-    fuse_sell: float = -1.2        # -1.5 → -1.2 (降低卖出门槛)
-    fuse_strong_sell: float = -2.0 # -2.5 → -2.0 (降低强卖出门槛)
+    # 信号阈值 - 包B+配置（激进调整，目标 6-9%）
+    fuse_buy: float = 0.95         # 1.0 → 0.95 (包B: 温和降低买入门槛)
+    fuse_strong_buy: float = 1.70  # 1.8 → 1.70 (包B: 温和降低强买入门槛)
+    fuse_sell: float = -0.95       # -1.0 → -0.95 (包B: 温和降低卖出门槛)
+    fuse_strong_sell: float = -1.70 # -1.8 → -1.70 (包B: 温和降低强卖出门槛)
     
-    # 一致性阈值 - 进攻版配置
-    min_consistency: float = 0.2   # 0.3 → 0.2 (降低一致性要求)
-    strong_min_consistency: float = 0.6  # 0.7 → 0.6 (降低强一致性要求)
+    # 一致性阈值 - 包B+配置（更激进降低一致性要求）
+    min_consistency: float = 0.12  # 0.15 → 0.12 (包B: 温和降低一致性要求)
+    strong_min_consistency: float = 0.45  # 0.5 → 0.45 (包B: 温和降低强一致性要求)
     
-    # 数据处理 - 进攻版配置
+    # 数据处理 - 包B配置
     z_clip: float = 4.0            # 5.0 → 4.0 (放宽Z-score裁剪)
     max_lag: float = 0.25         # 0.800 → 0.25 (收紧时间对齐要求)
     
-    # 去噪参数 - 进攻版配置（大幅提升触发率）
+    # 去噪参数 - 包B+配置（继续减少冷却时间）
     hysteresis_exit: float = 0.6  # 0.8 → 0.6 (进一步减小迟滞)
-    cooldown_secs: float = 0.6    # 0.3 → 0.6 (适度冷却，避免过度频繁)
+    cooldown_secs: float = 0.3    # 保持 0.3 (propsB+ 冷却时间)
     min_consecutive: int = 1      # 保持1 (最低持续门槛)
     
-    # 暖启动 - 进攻版配置
-    min_warmup_samples: int = 20   # 10 → 20 (平衡快速点火与数据质量)
+    # 暖启动 - 包B+配置
+    min_warmup_samples: int = 10   # 保持 10 (包B+ 暖启动样本数)
+    
+    # 高级机制配置（突破冷却限制）
+    rearm_on_flip: bool = True  # 方向翻转即重臂
+    flip_rearm_margin: float = 0.05  # 重臂余量δ=5%
+    
+    adaptive_cooldown_enabled: bool = True  # 自适应冷却
+    adaptive_cooldown_k: float = 0.6  # 收缩系数
+    adaptive_cooldown_min_secs: float = 0.12  # 最小冷却时间
+    
+    burst_coalesce_ms: float = 120.0  # 微型突发合并窗口（毫秒）
 
 
 class OFI_CVD_Fusion:
@@ -67,16 +78,50 @@ class OFI_CVD_Fusion:
     5. 暖启动保护: 数据不足时返回neutral
     """
     
-    def __init__(self, cfg: OFICVDFusionConfig = None, config_loader=None):
+    def __init__(self, cfg: OFICVDFusionConfig = None, config_loader=None, verbose: bool = False,
+                 runtime_cfg: Optional[Dict[str, Any]] = None):
         """
         初始化融合器
         
         Args:
             cfg: 融合配置，默认使用标准配置
-            config_loader: 配置加载器实例，用于从统一配置系统加载参数
+            config_loader: 配置加载器实例（兼容旧接口，库式调用时不应使用）
+            verbose: 是否启用详细日志输出
+            runtime_cfg: 运行时配置字典，库式调用时使用（优先于config_loader）
         """
-        if config_loader:
-            # 从统一配置系统加载参数
+        self._config_loader = config_loader  # 保存配置来源，便于可观测
+        self._verbose = verbose  # 日志开关
+        self._logger = logging.getLogger(__name__)  # 模块级logger
+        
+        # 优先使用运行时配置字典（库式调用）
+        if runtime_cfg is not None:
+            fusion_cfg = runtime_cfg.get('fusion', {}) if isinstance(runtime_cfg, dict) else {}
+            # 从运行时配置构建OFICVDFusionConfig对象
+            weights = fusion_cfg.get('weights', {})
+            thresholds = fusion_cfg.get('thresholds', {})
+            consistency = fusion_cfg.get('consistency', {})
+            data_processing = fusion_cfg.get('data_processing', {})
+            denoising = fusion_cfg.get('denoising', {})
+            
+            default = OFICVDFusionConfig()
+            self.cfg = OFICVDFusionConfig(
+                w_ofi=weights.get('w_ofi', default.w_ofi),
+                w_cvd=weights.get('w_cvd', default.w_cvd),
+                fuse_buy=thresholds.get('fuse_buy', default.fuse_buy),
+                fuse_strong_buy=thresholds.get('fuse_strong_buy', default.fuse_strong_buy),
+                fuse_sell=thresholds.get('fuse_sell', default.fuse_sell),
+                fuse_strong_sell=thresholds.get('fuse_strong_sell', default.fuse_strong_sell),
+                min_consistency=consistency.get('min_consistency', default.min_consistency),
+                strong_min_consistency=consistency.get('strong_min_consistency', default.strong_min_consistency),
+                z_clip=data_processing.get('z_clip', default.z_clip) if data_processing else default.z_clip,
+                max_lag=data_processing.get('max_lag', default.max_lag) if data_processing else default.max_lag,
+                min_warmup_samples=data_processing.get('warmup_samples', default.min_warmup_samples) if data_processing else default.min_warmup_samples,
+                hysteresis_exit=denoising.get('hysteresis_exit', default.hysteresis_exit) if denoising else default.hysteresis_exit,
+                cooldown_secs=denoising.get('cooldown_secs', default.cooldown_secs) if denoising else default.cooldown_secs,
+                min_consecutive=denoising.get('min_duration', default.min_consecutive) if denoising else default.min_consecutive
+            )
+        elif config_loader:
+            # 从统一配置系统加载参数（兼容旧接口）
             self.cfg = self._load_from_config_loader(config_loader)
         else:
             self.cfg = cfg or OFICVDFusionConfig()
@@ -92,8 +137,19 @@ class OFI_CVD_Fusion:
         self._last_signal = SignalType.NEUTRAL
         self._last_emit_ts: Optional[float] = None
         self._streak = 0
+        self._prev_raw_signal: Optional[SignalType] = None  # 记录"原始判定"用于连击门槛
         self._warmup_count = 0
         self._is_warmup = True
+        # default regime for consistency thresholds
+        self._current_regime = 'normal'
+        
+        # 运行时场景一致性配置缓存
+        self._regime_consistency = None
+        
+        # 高级机制状态（突破冷却限制）
+        self._last_signal_direction = 0  # 1=buy, -1=sell, 0=neutral
+        self._burst_window_candidates = []  # 突发合并候选池
+        self._burst_window_start = None  # 突发窗口开始时间
         
         # 统计信息
         self._stats = {
@@ -101,7 +157,12 @@ class OFI_CVD_Fusion:
             'downgrades': 0,
             'warmup_returns': 0,
             'invalid_inputs': 0,
-            'lag_exceeded': 0
+            'lag_exceeded': 0,
+            'cooldown_blocks': 0,
+            'min_duration_blocks': 0,
+            'flip_rearm': 0,
+            'adaptive_cooldown_used': 0,
+            'burst_coalesced': 0
         }
     
     def _load_from_config_loader(self, config_loader) -> OFICVDFusionConfig:
@@ -150,7 +211,7 @@ class OFI_CVD_Fusion:
             # 提取数据处理配置
             data_processing = fusion_config.get('data_processing', {})
             z_clip = data_processing.get('z_clip', 5.0)
-            max_lag = data_processing.get('max_lag', 0.300)
+            max_lag = data_processing.get('max_lag', 0.25)  # 统一为进攻版默认值
             warmup_samples = data_processing.get('warmup_samples', 30)
             
             # 提取去噪配置
@@ -193,9 +254,11 @@ class OFI_CVD_Fusion:
             z_cvd: CVD Z-score
             
         Returns:
-            一致性得分 (0-1)
+            一致性得分 (0-1之间，更高=更一致)
         """
-        if z_ofi == 0 or z_cvd == 0:
+        # 使用极小epsilon避免浮点/裁剪造成的0被误判
+        eps = 1e-9
+        if abs(z_ofi) < eps or abs(z_cvd) < eps:
             return 0.0
         
         # 方向一致性检查
@@ -221,7 +284,7 @@ class OFI_CVD_Fusion:
     def _apply_denoising(self, signal: SignalType, fusion_score: float, 
                         ts: float, consistency: float = 0.0) -> tuple[SignalType, list]:
         """
-        应用去噪三件套 - 增强版
+        应用去噪三件套 + 高级机制（方向翻转重臂、自适应冷却、突发合并）
         
         Args:
             signal: 原始信号
@@ -235,12 +298,84 @@ class OFI_CVD_Fusion:
         denoising_reasons = []
         original_signal = signal
         
-        # 1. 冷却时间检查
-        if (self._last_emit_ts and 
-            (ts - self._last_emit_ts) < self.cfg.cooldown_secs and
-            signal != SignalType.NEUTRAL):
-            denoising_reasons.append("cooldown")
-            return SignalType.NEUTRAL, denoising_reasons
+        # 获取信号方向
+        current_direction = 0  # 1=buy, -1=sell, 0=neutral
+        if signal in [SignalType.BUY, SignalType.STRONG_BUY]:
+            current_direction = 1
+        elif signal in [SignalType.SELL, SignalType.STRONG_SELL]:
+            current_direction = -1
+        
+        # 连击计数：基于"原始判定信号"，而非上次已发出的信号
+        if original_signal is not SignalType.NEUTRAL:
+            if self._prev_raw_signal == original_signal:
+                self._streak += 1
+            else:
+                self._streak = 1
+        else:
+            self._streak = 0
+        self._prev_raw_signal = original_signal
+        
+        # 1. 冷却时间检查 + 高级机制
+        cooldown_passed = True
+        effective_cooldown = self.cfg.cooldown_secs
+        
+        if self._last_emit_ts:
+            elapsed = ts - self._last_emit_ts
+            
+            # 机制1: 自适应冷却 - 根据信号强度动态调整
+            if self.cfg.adaptive_cooldown_enabled and elapsed < self.cfg.cooldown_secs:
+                # 计算超阈强度
+                strength = 0.0
+                if abs(fusion_score) >= abs(self.cfg.fuse_buy):
+                    strength = min(1.0, (abs(fusion_score) - abs(self.cfg.fuse_buy)) / 
+                                  (abs(self.cfg.fuse_strong_buy) - abs(self.cfg.fuse_buy)))
+                
+                # 有效冷却 = max(最小冷却, 基础冷却 * (1 - k * 强度))
+                effective_cooldown = max(
+                    self.cfg.adaptive_cooldown_min_secs,
+                    self.cfg.cooldown_secs * (1 - self.cfg.adaptive_cooldown_k * strength)
+                )
+                if effective_cooldown < self.cfg.cooldown_secs:
+                    self._stats['adaptive_cooldown_used'] += 1
+            
+            # 机制2: 方向翻转即重臂 - 方向反转时提前解锁
+            rearm = False
+            if self.cfg.rearm_on_flip and current_direction != 0:
+                if self._last_signal_direction != 0 and current_direction != self._last_signal_direction:
+                    # 方向翻转，检查是否超阈足够
+                    threshold = abs(self.cfg.fuse_buy) * (1 + self.cfg.flip_rearm_margin)
+                    if abs(fusion_score) >= threshold:
+                        rearm = True
+                        denoising_reasons.append("flip_rearm")
+                        self._stats['flip_rearm'] += 1
+            
+            # 判断是否通过冷却
+            if not rearm and elapsed < effective_cooldown:
+                cooldown_passed = False
+            
+            # 冷却检查结果
+            if not cooldown_passed and signal != SignalType.NEUTRAL:
+                denoising_reasons.append("cooldown")
+                self._stats['cooldown_blocks'] += 1
+                # 记录到突发合并候选池（如果启用）
+                if self.cfg.burst_coalesce_ms > 0:
+                    if (self._burst_window_start is None or 
+                        (ts - self._burst_window_start) > self.cfg.burst_coalesce_ms / 1000.0):
+                        # 新窗口，清空候选池
+                        self._burst_window_candidates = []
+                        self._burst_window_start = ts
+                    
+                    # 添加到候选池
+                    self._burst_window_candidates.append({
+                        'signal': signal,
+                        'score': abs(fusion_score),
+                        'ts': ts
+                    })
+                return SignalType.NEUTRAL, denoising_reasons
+        
+        # 更新方向记录
+        if signal != SignalType.NEUTRAL:
+            self._last_signal_direction = current_direction
         
         # 2. 一致性加权迟滞处理 - 增强版
         consistency_bonus = max(0.0, consistency - 0.3) * 0.5  # 一致性加分
@@ -273,37 +408,25 @@ class OFI_CVD_Fusion:
         
         # 3. 一致性驱动的信号强度调整
         if consistency > 0.7:  # 高一致性时放宽阈值
-            if signal == SignalType.BUY and fusion_score > self.cfg.fuse_buy * 0.8:
-                signal = SignalType.BUY
-                denoising_reasons.append("consistency_boost")
-            elif signal == SignalType.SELL and fusion_score < self.cfg.fuse_sell * 0.8:
-                signal = SignalType.SELL
-                denoising_reasons.append("consistency_boost")
+            # 允许将 NEUTRAL 升级为 BUY/SELL（接近阈值时）
+            if signal == SignalType.NEUTRAL:
+                if fusion_score > self.cfg.fuse_buy * 0.8:
+                    signal = SignalType.BUY
+                    denoising_reasons.append("consistency_boost")
+                elif fusion_score < self.cfg.fuse_sell * 0.8:
+                    signal = SignalType.SELL
+                    denoising_reasons.append("consistency_boost")
         elif consistency < 0.3:  # 低一致性时严格节流
             if signal in [SignalType.BUY, SignalType.STRONG_BUY, SignalType.SELL, SignalType.STRONG_SELL]:
                 signal = SignalType.NEUTRAL
                 denoising_reasons.append("low_consistency_throttle")
         
-        # 4. 最小持续检查 - 场景自适应版本
-        if signal != SignalType.NEUTRAL and self._last_signal == signal:
-            self._streak += 1
-        else:
-            self._streak = 0
-        
-        # 动态调整min_consecutive：活跃场景和高一致性时放宽
-        current_regime = getattr(self, '_current_regime', 'normal')
-        effective_min_consecutive = self.cfg.min_consecutive
-        
-        # 活跃场景(A_H/A_L)放宽要求
-        if current_regime in ['A_H', 'A_L']:
-            effective_min_consecutive = 0  # 活跃场景立即触发
-        # 高一致性时放宽要求
-        elif consistency > 0.7:
-            effective_min_consecutive = max(0, self.cfg.min_consecutive - 1)
-            
-        if signal != SignalType.NEUTRAL and self._streak < effective_min_consecutive:
+        # 4. 最小持续检查：一致性提升（consistency_boost）允许放行首帧
+        bypass = ("consistency_boost" in denoising_reasons)
+        if signal != SignalType.NEUTRAL and self._streak < self.cfg.min_consecutive and not bypass:
             signal = SignalType.NEUTRAL
             denoising_reasons.append("min_duration")
+            self._stats['min_duration_blocks'] += 1
         
         return signal, denoising_reasons
     
@@ -362,6 +485,7 @@ class OFI_CVD_Fusion:
         
         # 4. 时间对齐检查与单因子降级
         w_ofi, w_cvd = self.w_ofi, self.w_cvd
+        degraded = False
         if lag_sec > self.cfg.max_lag:
             self._stats['lag_exceeded'] += 1
             self._stats['downgrades'] += 1  # 添加降级统计
@@ -373,10 +497,60 @@ class OFI_CVD_Fusion:
             else:
                 w_ofi, w_cvd = 0.0, 1.0
                 reason_codes.append("degraded_cvd_only")
+            degraded = True
         
         # 5. 融合计算
-        fusion_score = w_ofi * z_ofi_clipped + w_cvd * z_cvd_clipped
+        raw_fusion = w_ofi * z_ofi_clipped + w_cvd * z_cvd_clipped
         consistency = self._consistency(z_ofi_clipped, z_cvd_clipped)
+        if degraded:
+            # 单因子时一致性按 1.0 处理，避免"降级=不可信"的误判
+            consistency = 1.0
+        
+        # 融合分数诊断日志（每10秒汇总一次）
+        current_time = time.time()
+        if not hasattr(self, '_last_fusion_log'):
+            self._last_fusion_log = current_time
+            self._fusion_samples = []
+        
+        # 收集样本用于统计
+        self._fusion_samples.append({
+            'z_ofi': z_ofi_clipped,
+            'z_cvd': z_cvd_clipped,
+            'w_ofi': w_ofi,
+            'w_cvd': w_cvd,
+            'raw_fusion': raw_fusion,
+            'consistency': consistency,
+            'ts': current_time
+        })
+        
+        # 每10秒打印一次融合分数统计（带numpy try/except保护）
+        if current_time - self._last_fusion_log >= 10:
+            if self._fusion_samples:
+                try:
+                    import numpy as np
+                    raw_fusions = [s['raw_fusion'] for s in self._fusion_samples]
+                    consistencies = [s['consistency'] for s in self._fusion_samples]
+                    
+                    self._logger.info(f"[FUSION_DIAG] n={len(self._fusion_samples)} samples")
+                    self._logger.info(f"[FUSION_DIAG] Raw fusion stats: p50={np.percentile(raw_fusions, 50):.3f}, "
+                          f"p95={np.percentile(raw_fusions, 95):.3f}, p99={np.percentile(raw_fusions, 99):.3f}, max={np.max(raw_fusions):.3f}")
+                    self._logger.info(f"[FUSION_DIAG] Consistency stats: p50={np.percentile(consistencies, 50):.3f}, "
+                          f"p95={np.percentile(consistencies, 95):.3f}")
+                    self._logger.info(f"[FUSION_DIAG] Sample: z_ofi={z_ofi_clipped:.3f}, z_cvd={z_cvd_clipped:.3f}, "
+                          f"w_ofi={w_ofi:.2f}, w_cvd={w_cvd:.2f}, raw_fusion={raw_fusion:.3f}, consistency={consistency:.3f}")
+                    
+                    # 检查是否需要校准策略A
+                    if np.percentile(raw_fusions, 95) < 0.3:
+                        self._logger.warning(f"[FUSION_DIAG] Raw fusion p95 < 0.3, may need calibration strategy A")
+                except ImportError:
+                    self._logger.warning("[FUSION_DIAG] numpy not available, skipping statistics")
+            else:
+                self._logger.debug("[FUSION_DIAG] No samples collected in 10s window")
+            
+            self._last_fusion_log = current_time
+            self._fusion_samples = []
+        
+        fusion_score = raw_fusion
         
         # 6. 信号生成
         signal = SignalType.NEUTRAL
@@ -402,6 +576,22 @@ class OFI_CVD_Fusion:
             self._last_emit_ts = ts
         self._last_signal = signal if signal != SignalType.NEUTRAL else self._last_signal
         
+        # 添加融合器可观测性护栏（受verbose控制）
+        if self._verbose:
+            self._logger.debug(f"[FUSION_OBSERVABILITY] Input: z_ofi={z_ofi_clipped:.6f}, z_cvd={z_cvd_clipped:.6f}")
+            self._logger.debug(f"[FUSION_OBSERVABILITY] Weights: w_ofi={w_ofi:.3f}, w_cvd={w_cvd:.3f}")
+            self._logger.debug(f"[FUSION_OBSERVABILITY] Raw fusion: {raw_fusion:.6f}, consistency={consistency:.3f}")
+            self._logger.debug(f"[FUSION_OBSERVABILITY] Regime: {self._current_regime}, thresholds: fuse_buy={self.cfg.fuse_buy}, fuse_sell={self.cfg.fuse_sell}")
+            self._logger.debug(f"[FUSION_OBSERVABILITY] Consistency thresholds: min={self.cfg.min_consistency:.3f}, strong={self.cfg.strong_min_consistency:.3f}")
+            self._logger.debug(f"[FUSION_OBSERVABILITY] Config source: unified_config={self._config_loader is not None}")
+        
+        # 当融合分数接近0时，记录详细原因
+        if abs(raw_fusion) < 1e-6:
+            reason_code = "due_to_warmup" if "warmup" in reason_codes else "zero_inputs" if (abs(z_ofi_clipped) < 1e-6 and abs(z_cvd_clipped) < 1e-6) else "consistency_fail"
+            self._logger.debug(f"[FUSION_ZERO] Raw fusion={raw_fusion:.6f}, reason_code={reason_code}, reason_codes={reason_codes}")
+        
+        self._logger.debug(f"[FUSION_INTERNAL] Signal: {signal.value}, reason_codes: {reason_codes}")
+        
         return {
             "fusion_score": fusion_score,
             "signal": signal.value,
@@ -414,7 +604,9 @@ class OFI_CVD_Fusion:
                 "cvd": w_cvd * z_cvd_clipped
             },
             "warmup": False,
-            "stats": self._stats.copy()
+            "stats": self._stats.copy(),
+            "last_signal": self._last_signal.value,  # 上一次发射的非中性信号
+            "streak": self._streak  # 当前连击计数
         }
     
     def get_stats(self) -> Dict[str, Any]:
@@ -426,15 +618,99 @@ class OFI_CVD_Fusion:
         self._last_signal = SignalType.NEUTRAL
         self._last_emit_ts = None
         self._streak = 0
+        self._prev_raw_signal = None  # 重置原始判定信号
         self._warmup_count = 0
         self._is_warmup = True
+        # default regime for consistency thresholds
+        self._current_regime = 'normal'
+        
+        # 高级机制状态重置
+        self._last_signal_direction = 0
+        self._burst_window_candidates = []
+        self._burst_window_start = None
+        
         self._stats = {
             'total_updates': 0,
             'downgrades': 0,
             'warmup_returns': 0,
             'invalid_inputs': 0,
-            'lag_exceeded': 0
+            'lag_exceeded': 0,
+            'cooldown_blocks': 0,
+            'min_duration_blocks': 0,
+            'flip_rearm': 0,
+            'adaptive_cooldown_used': 0,
+            'burst_coalesced': 0
         }
+    
+    # -------- 运行时更新（移入类内，修正缩进/作用域） --------
+    def set_thresholds(self, **kwargs):
+        """Update fusion thresholds and consistency safely at runtime.
+        Accepts keys: fuse_buy, fuse_strong_buy, fuse_sell, fuse_strong_sell,
+        min_consistency, strong_min_consistency, regime_consistency (dict),
+        w_ofi, w_cvd.
+        """
+        updated = {}
+        # update weights
+        for k in ("w_ofi", "w_cvd"):
+            if k in kwargs:
+                try:
+                    setattr(self.cfg, k, float(kwargs[k]))
+                    updated[k] = float(kwargs[k])
+                except Exception as e:
+                    self._logger.warning(f"Failed to set {k}: {e}")
+        # renormalize weights
+        try:
+            total = self.cfg.w_ofi + self.cfg.w_cvd
+            if total > 0:
+                self.w_ofi = self.cfg.w_ofi / total
+                self.w_cvd = self.cfg.w_cvd / total
+        except Exception as e:
+            self._logger.warning(f"Weight renormalization failed: {e}")
+        # thresholds
+        for k in ("fuse_buy", "fuse_strong_buy", "fuse_sell", "fuse_strong_sell",
+                  "min_consistency", "strong_min_consistency"):
+            if k in kwargs:
+                try:
+                    setattr(self.cfg, k, float(kwargs[k]))
+                    updated[k] = float(kwargs[k])
+                except Exception as e:
+                    self._logger.warning(f"Failed to set {k}: {e}")
+        # regime consistency
+        rc = kwargs.get("regime_consistency")
+        if isinstance(rc, dict):
+            try:
+                self._regime_consistency = rc  # store for runtime switching
+                updated["regime_consistency"] = True
+            except Exception as e:
+                self._logger.warning(f"Failed to set regime_consistency: {e}")
+        if updated:
+            self._logger.info(f"Fusion thresholds updated: {updated}")
+        return updated
+
+    def set_regime(self, regime: str):
+        """外部可更新当前场景标签（供统一配置使用）"""
+        old_regime = self._current_regime
+        self._current_regime = regime
+        
+        # 如果配置了场景一致性阈值，应用当前regime的阈值
+        if self._regime_consistency and isinstance(self._regime_consistency, dict):
+            regime_config = self._regime_consistency.get(regime, {})
+            if regime_config:
+                try:
+                    # 更新当前regime对应的阈值
+                    if 'min_consistency' in regime_config:
+                        self.cfg.min_consistency = float(regime_config['min_consistency'])
+                        self._logger.debug(f"Updated min_consistency for regime {regime}: {self.cfg.min_consistency}")
+                    if 'strong_min_consistency' in regime_config:
+                        self.cfg.strong_min_consistency = float(regime_config['strong_min_consistency'])
+                        self._logger.debug(f"Updated strong_min_consistency for regime {regime}: {self.cfg.strong_min_consistency}")
+                except Exception as e:
+                    self._logger.warning(f"Failed to apply regime thresholds for {regime}: {e}")
+        
+        if old_regime != regime:
+            self._logger.info(f"Regime switched from {old_regime} to {regime}")
+        
+        return self._current_regime
 
 
 def create_fusion_config(**kwargs) -> OFICVDFusionConfig:
@@ -450,28 +726,6 @@ def create_fusion_config(**kwargs) -> OFICVDFusionConfig:
     return OFICVDFusionConfig(**kwargs)
 
 
-# 默认配置实例
+# 默认配置层级
+
 DEFAULT_CONFIG = OFICVDFusionConfig()
-
-# 为OFI_CVD_Fusion类添加set_thresholds方法
-def set_thresholds(self, **kwargs):
-    """
-    统一入口设置阈值参数
-    
-    Args:
-        **kwargs: 阈值参数
-    """
-    # 仅允许改 cfg 上已有字段
-    for k, v in kwargs.items():
-        if v is not None and hasattr(self.cfg, k):
-            setattr(self.cfg, k, v)
-
-    # 如果权重被修改，重新归一化
-    tw = self.cfg.w_ofi + self.cfg.w_cvd
-    if tw <= 0:
-        raise ValueError("权重和必须大于0")
-    self.w_ofi = self.cfg.w_ofi / tw
-    self.w_cvd = self.cfg.w_cvd / tw
-
-# 动态添加方法到类
-OFI_CVD_Fusion.set_thresholds = set_thresholds

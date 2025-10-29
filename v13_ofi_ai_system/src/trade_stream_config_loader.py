@@ -13,15 +13,15 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional
 import logging
 
-from src.utils.config_loader import ConfigLoader
+from utils.config_loader import ConfigLoader
 
 logger = logging.getLogger(__name__)
 
 @dataclass
 class QueueConfig:
     """队列配置"""
-    size: int = 1024
-    max_size: int = 2048
+    size: int = 4096  # 扩容以降低丢弃率
+    max_size: int = 8192
     backpressure_threshold: float = 0.8
 
 @dataclass
@@ -44,7 +44,7 @@ class WebSocketConfig:
 @dataclass
 class PerformanceConfig:
     """性能配置"""
-    watermark_ms: int = 1000
+    watermark_ms: int = 300  # 降低到300ms进一步加速处理
     batch_size: int = 10
     max_processing_rate: int = 1000
     memory_limit_mb: int = 100

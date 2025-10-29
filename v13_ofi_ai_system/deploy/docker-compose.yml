@@ -1,0 +1,68 @@
+version: '3.8'
+
+services:
+  harvestd:
+    image: python:3.11-slim
+    container_name: harvestd
+    working_dir: /app
+    
+    volumes:
+      - .:/app
+      - ./deploy/data:/app/deploy/data
+      - ./deploy/artifacts:/app/deploy/artifacts
+    
+    command: ["python", "tools/harvestd.py"]
+    
+    environment:
+      # Daemon configuration
+      HARVESTD_PORT: "8088"
+      VALIDATE_INTERVAL_MIN: "60"
+      RESTART_BACKOFF_MAX_SEC: "60"
+      DQ_FAIL_MAX_TOL: "2"
+      LOG_TAIL_LINES: "200"
+      PYTHONIOENCODING: "UTF-8"
+      PYTHONUTF8: "1"
+      
+      # Data collection configuration (from Task 1.3.1)
+      SYMBOLS: "BTCUSDT,ETHUSDT,BNBUSDT,XRPUSDT,ADAUSDT,SOLUSDT"
+      RUN_HOURS: "72"
+      PARQUET_ROTATE_SEC: "60"
+      WSS_PING_INTERVAL: "20"
+      WSS_HEARTBEAT_TIMEOUT: "30"
+      WSS_RECONNECT_DELAY: "1.0"
+      WSS_MAX_RECONNECT_ATTEMPTS: "10"
+      DEDUP_LRU: "8192"
+      
+      # CVD configuration
+      Z_MODE: "delta"
+      SCALE_MODE: "hybrid"
+      MAD_MULTIPLIER: "1.8"
+      SCALE_FAST_WEIGHT: "0.20"
+      HALF_LIFE_SEC: "600"
+      WINSOR_LIMIT: "8.0"
+      
+      # Scenario labels configuration
+      WIN_SECS: "300"
+      ACTIVE_TPS: "2.0"
+      VOL_SPLIT: "0.5"
+      WRITE_SESSION_LABELS: "true"
+      SCENARIO_SCHEME: "regime2x2"
+      FEE_TIER: "TM"
+    
+    ports:
+      - "8088:8088"
+    
+    restart: unless-stopped
+    
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8088/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

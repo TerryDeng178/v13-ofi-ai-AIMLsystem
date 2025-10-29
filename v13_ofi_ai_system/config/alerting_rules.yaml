@@ -1,0 +1,224 @@
+# Core Algorithm 告警规则配置
+# 基于最终修复验证报告的关键阈值
+
+alerts:
+  # 核心业务告警
+  core_business:
+    - name: "Strong Signal Ratio Too High"
+      condition: "strong_ratio > 3.5"
+      severity: "CRITICAL"
+      window: "5m"
+      description: "强信号占比超过3.5%上限"
+      action: "immediate_rollback"
+      notification:
+        - "slack"
+        - "email"
+        - "pagerduty"
+    
+    - name: "Strong Signal Ratio Too Low"
+      condition: "strong_ratio < 0.5"
+      severity: "WARNING"
+      window: "5m"
+      description: "强信号占比低于0.5%下限"
+      action: "investigate"
+      notification:
+        - "slack"
+        - "email"
+    
+    - name: "Divergence vs Fusion Conflict High"
+      condition: "divergence_conflict_ratio >= 2.0"
+      severity: "CRITICAL"
+      window: "5m"
+      description: "背离冲突率超过2%阈值"
+      action: "immediate_rollback"
+      notification:
+        - "slack"
+        - "email"
+        - "pagerduty"
+    
+    - name: "Strong 5m Accuracy Low"
+      condition: "strong_5m_accuracy < 52.0"
+      severity: "WARNING"
+      window: "10m"
+      description: "强信号5分钟方向准确率低于52%"
+      action: "investigate"
+      notification:
+        - "slack"
+        - "email"
+
+  # Z-Score分布告警
+  z_score_distribution:
+    - name: "OFI Z-Score Out of Range"
+      condition: "p_z_ofi_gt_2 < 3.0 OR p_z_ofi_gt_2 > 12.0"
+      severity: "WARNING"
+      window: "5m"
+      description: "OFI Z-Score异常率超出3-12%范围"
+      action: "investigate"
+      notification:
+        - "slack"
+    
+    - name: "CVD Z-Score Out of Range"
+      condition: "p_z_cvd_gt_2 < 3.0 OR p_z_cvd_gt_2 > 12.0"
+      severity: "WARNING"
+      window: "5m"
+      description: "CVD Z-Score异常率超出3-12%范围"
+      action: "investigate"
+      notification:
+        - "slack"
+
+  # 性能告警
+  performance:
+    - name: "Event Lag P95 High"
+      condition: "event_lag_p95 > 120"
+      severity: "CRITICAL"
+      window: "5m"
+      description: "事件滞后P95超过120ms"
+      action: "immediate_rollback"
+      notification:
+        - "slack"
+        - "email"
+        - "pagerduty"
+    
+    - name: "JsonlSink Dropped Messages"
+      condition: "jsonl_sink_dropped > 0"
+      severity: "WARNING"
+      window: "1m"
+      description: "JSONL输出有消息丢弃"
+      action: "investigate"
+      notification:
+        - "slack"
+    
+    - name: "JsonlSink Queue Size High"
+      condition: "jsonl_sink_qsize > 5000"
+      severity: "WARNING"
+      window: "2m"
+      description: "JSONL输出队列积压严重"
+      action: "investigate"
+      notification:
+        - "slack"
+
+  # 存储健康告警
+  storage_health:
+    - name: "No Signal Files Generated"
+      condition: "ready_files_count == 0"
+      severity: "CRITICAL"
+      window: "2m"
+      description: "无信号文件生成"
+      action: "immediate_rollback"
+      notification:
+        - "slack"
+        - "email"
+        - "pagerduty"
+    
+    - name: "Gate Stats Heartbeat Missing"
+      condition: "gate_stats_last_update > 60"
+      severity: "WARNING"
+      window: "1m"
+      description: "门控统计心跳超时"
+      action: "investigate"
+      notification:
+        - "slack"
+    
+    - name: "Spool Files Lingering"
+      condition: "spool_files_count > 20"
+      severity: "WARNING"
+      window: "5m"
+      description: "临时文件积压过多"
+      action: "investigate"
+      notification:
+        - "slack"
+
+  # 系统健康告警
+  system_health:
+    - name: "High Error Rate"
+      condition: "error_rate > 0.01"
+      severity: "CRITICAL"
+      window: "5m"
+      description: "系统错误率超过1%"
+      action: "immediate_rollback"
+      notification:
+        - "slack"
+        - "email"
+        - "pagerduty"
+    
+    - name: "Memory Usage High"
+      condition: "memory_usage > 80"
+      severity: "WARNING"
+      window: "5m"
+      description: "内存使用率超过80%"
+      action: "investigate"
+      notification:
+        - "slack"
+    
+    - name: "CPU Usage High"
+      condition: "cpu_usage > 90"
+      severity: "WARNING"
+      window: "5m"
+      description: "CPU使用率超过90%"
+      action: "investigate"
+      notification:
+        - "slack"
+
+  # 部署阶段告警
+  deployment:
+    - name: "Canary Phase Failed"
+      condition: "deployment_phase == 'CANARY' AND strong_ratio > 4.0"
+      severity: "CRITICAL"
+      window: "1m"
+      description: "金丝雀阶段失败，需要回滚"
+      action: "immediate_rollback"
+      notification:
+        - "slack"
+        - "email"
+        - "pagerduty"
+    
+    - name: "Partial Phase Failed"
+      condition: "deployment_phase == 'PARTIAL' AND strong_ratio > 4.0"
+      severity: "CRITICAL"
+      window: "1m"
+      description: "部分部署阶段失败，需要回滚"
+      action: "immediate_rollback"
+      notification:
+        - "slack"
+        - "email"
+        - "pagerduty"
+
+# 告警通知配置
+notification:
+  slack:
+    webhook_url: "${SLACK_WEBHOOK_URL}"
+    channel: "#core-algorithm-alerts"
+    username: "Core Algorithm Bot"
+  
+  email:
+    smtp_server: "${SMTP_SERVER}"
+    from_address: "alerts@company.com"
+    to_addresses:
+      - "devops@company.com"
+      - "trading@company.com"
+  
+  pagerduty:
+    integration_key: "${PAGERDUTY_INTEGRATION_KEY}"
+    service_name: "Core Algorithm"
+
+# 告警抑制规则
+inhibition_rules:
+  - source_match:
+      alertname: "High Error Rate"
+    target_match:
+      alertname: "Strong Signal Ratio Too High"
+    description: "系统错误时抑制业务告警"
+  
+  - source_match:
+      alertname: "Event Lag P95 High"
+    target_match:
+      alertname: "JsonlSink Queue Size High"
+    description: "高延迟时抑制队列告警"
+
+# 告警分组规则
+grouping_rules:
+  - group_by: ["symbol", "alertname"]
+    group_wait: "30s"
+    group_interval: "5m"
+    repeat_interval: "1h"
+    description: "按交易对和告警类型分组"

@@ -1,0 +1,22 @@
+# Core Algorithm 快速修复配置补丁
+# 目标：将强信号占比从15%降至1.5-3.0%，背离冲突从2.5%降至<2%
+
+# 修复方案1：降低强信号密度
+fusion:
+  thresholds:
+    fuse_buy: 1.0
+    fuse_sell: -1.0
+    fuse_strong_buy: 2.2   # 由1.8上调，减少强信号触发
+    fuse_strong_sell: -2.2
+  consistency:
+    min_consistency: 0.20  # 由0.15上调，提高一致性门槛
+    strong_min_consistency: 0.60  # 由0.50上调，强信号一致性要求更高
+
+# 修复方案2：抑制背离vs融合冲突
+divergence:
+  min_strength: 0.90       # 由0.80上调，提高背离强度要求
+  min_separation_secs: 120 # 增加分离时间，避免短时来回
+  count_conflict_only_when_fusion_ge: 1.0  # 仅当融合≥弱阈才计冲突
+
+# 保持其他参数不变
+# Z分布、滞后、存储/心跳等已PASS的指标无需调整

@@ -60,7 +60,7 @@ Real OFI Calculator - Task 1.2.1 (L1 OFI版本)
 from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass
-from typing import Optional, List, Tuple, Dict
+from typing import Optional, List, Tuple, Dict, Any
 import numpy as np
 
 @dataclass
@@ -137,17 +137,32 @@ class RealOFICalculator:
         "p_gt2_cnt", "p_gt3_cnt", "total_cnt"  # 尾部监控计数器
     )
     
-    def __init__(self, symbol: str, cfg: OFIConfig = None, config_loader=None):
+    def __init__(self, symbol: str, cfg: OFIConfig = None, config_loader=None, runtime_cfg: Dict[str, Any] = None):
         """
         初始化OFI计算器
         
         参数:
             symbol: 交易对符号（如"ETHUSDT"）
             cfg: OFI配置对象，默认None使用默认配置
-            config_loader: 配置加载器实例，用于从统一配置系统加载参数
+            config_loader: 配置加载器实例（兼容旧接口，库式调用时不应使用）
+            runtime_cfg: 运行时配置字典，库式调用时使用（优先于config_loader）
         """
-        if config_loader:
-            # 从统一配置系统加载参数
+        # 优先使用运行时配置字典（库式调用）
+        if runtime_cfg is not None:
+            ofi_cfg = runtime_cfg.get('ofi', {}) if isinstance(runtime_cfg, dict) else {}
+            # 从运行时配置构建OFIConfig对象
+            cfg = OFIConfig(
+                levels=ofi_cfg.get('levels', 5),
+                weights=ofi_cfg.get('weights', None),
+                z_window=ofi_cfg.get('z_window', 80),
+                ema_alpha=ofi_cfg.get('ema_alpha', 0.30),
+                z_clip=ofi_cfg.get('z_clip', 3.0),
+                reset_on_gap_ms=ofi_cfg.get('reset_on_gap_ms', 2000),
+                reset_on_session_change=ofi_cfg.get('reset_on_session_change', True),
+                per_symbol_window=ofi_cfg.get('per_symbol_window', True)
+            )
+        elif config_loader:
+            # 从统一配置系统加载参数（兼容旧接口）
             cfg = self._load_from_config_loader(config_loader, symbol)
         elif cfg is None:
             cfg = OFIConfig()

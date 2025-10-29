@@ -1,0 +1,75 @@
+# 金丝雀发布配置 - 生产部署
+# 基于最终修复验证报告，分阶段安全部署
+
+# 阶段1: 金丝雀交易对 (1-2小时)
+canary_symbols:
+  - BTCUSDT
+  - ETHUSDT
+
+# 阶段2: 25%交易对 (6-12小时)
+partial_symbols:
+  - BTCUSDT
+  - ETHUSDT
+  - BNBUSDT
+  - SOLUSDT
+
+# 阶段3: 全量交易对
+full_symbols:
+  - BTCUSDT
+  - ETHUSDT
+  - BNBUSDT
+  - SOLUSDT
+  - XRPUSDT
+  - DOGEUSDT
+
+# 金丝雀发布参数覆盖
+canary_overrides:
+  fusion:
+    thresholds:
+      fuse_strong_buy: 2.3
+      fuse_strong_sell: -2.3
+    consistency:
+      min_consistency: 0.20
+      strong_min_consistency: 0.65
+  divergence:
+    min_strength: 0.90
+    min_separation_secs: 120
+    count_conflict_only_when_fusion_ge: 1.0
+
+# 发布检查点
+checkpoints:
+  canary:
+    duration_minutes: 120
+    min_signals: 1000
+    max_strong_ratio: 3.5
+    min_strong_ratio: 0.8
+    max_conflict_ratio: 2.0
+    max_lag_p95_ms: 120
+    max_dropped: 0
+  
+  partial:
+    duration_minutes: 720
+    min_signals: 5000
+    max_strong_ratio: 3.5
+    min_strong_ratio: 0.8
+    max_conflict_ratio: 2.0
+    max_lag_p95_ms: 120
+    max_dropped: 0
+  
+  full:
+    duration_minutes: 1440
+    min_signals: 10000
+    max_strong_ratio: 3.5
+    min_strong_ratio: 0.8
+    max_conflict_ratio: 2.0
+    max_lag_p95_ms: 120
+    max_dropped: 0
+
+# 自动回滚条件
+rollback_conditions:
+  strong_ratio_above: 4.0
+  strong_ratio_below: 0.5
+  conflict_ratio_above: 2.5
+  lag_p95_above: 150
+  dropped_above: 10
+  error_rate_above: 0.01

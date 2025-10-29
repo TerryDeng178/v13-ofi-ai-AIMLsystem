@@ -40,5 +40,8 @@ W_OFI: 0.6
 W_CVD: 0.4
 FUSION_CAL_K: 1.0
 
+# 退避复位配置
+BACKOFF_RESET_SECS: 300
+
 # Paper Trading
 PAPER_ENABLE: 0

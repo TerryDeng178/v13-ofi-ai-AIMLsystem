@@ -1,0 +1,79 @@
+name: Config Build and Validate
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - 'v13_ofi_ai_system/config/**'
+      - 'v13_ofi_ai_system/v13conf/**'
+      - 'v13_ofi_ai_system/tools/conf_build.py'
+  pull_request:
+    branches: [ main, develop ]
+    paths:
+      - 'v13_ofi_ai_system/config/**'
+      - 'v13_ofi_ai_system/v13conf/**'
+      - 'v13_ofi_ai_system/tools/conf_build.py'
+
+jobs:
+  config-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          pip install pytest pydantic ruamel.yaml pyyaml
+      
+      - name: Stage 1 - Dry run config validation
+        env:
+          CI_BRANCH: ${{ github.ref_name }}
+          GITHUB_REF: ${{ github.ref }}
+        run: |
+          cd v13_ofi_ai_system
+          python tools/conf_build.py all --base-dir config --dry-run-config
+      
+      - name: Stage 2 - Run acceptance tests
+        run: |
+          cd v13_ofi_ai_system
+          pytest tests/test_config_system.py -v
+      
+      - name: Stage 3 - Build runtime packs
+        env:
+          CI_BRANCH: ${{ github.ref_name }}
+          GITHUB_REF: ${{ github.ref }}
+        run: |
+          cd v13_ofi_ai_system
+          python tools/conf_build.py all --base-dir config
+      
+      - name: Stage 4 - Verify runtime packs
+        run: |
+          cd v13_ofi_ai_system
+          for component in ofi cvd fusion divergence strategy core_algo; do
+            if [ ! -f "dist/config/${component}.runtime.current.yaml" ]; then
+              echo "错误: 缺少运行时包 dist/config/${component}.runtime.current.yaml"
+              exit 1
+            fi
+            # 验证运行时包结构
+            python -c "import yaml; d=yaml.safe_load(open('dist/config/${component}.runtime.current.yaml', encoding='utf-8')); assert '__meta__' in d, '缺少元信息'; assert '__invariants__' in d, '缺少不变量摘要'; print(f'✓ ${component} 运行时包验证通过')"
+          done
+          echo "所有运行时包验证通过"
+      
+      - name: Stage 5 - Dry-run verify all components
+        run: |
+          cd v13_ofi_ai_system
+          echo "对所有组件执行dry-run验证..."
+          python tools/conf_build.py all --base-dir config --dry-run-config
+          echo "✓ Dry-run验证通过"
+      
+      - name: Stage 6 - Upload artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: runtime-config-packs
+          path: v13_ofi_ai_system/dist/config/*.runtime.*.yaml
+          retention-days: 30
+

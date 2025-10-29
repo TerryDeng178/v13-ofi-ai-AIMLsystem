@@ -5,6 +5,27 @@
 使用正确的Binance Futures WebSocket URL格式
 """
 
+# V13: forbid os.getenv except ALLOWED_ENV (see ALLOWED_ENV below)
+# 以下环境变量将在第4步中替换为从cfg读取：
+# - EXTREME_TRAFFIC_THRESHOLD (line 135)
+# - EXTREME_ROTATE_SEC (line 137)
+# - MAX_ROWS_PER_FILE (line 140)
+# - SAVE_CONCURRENCY (line 142)
+# - HEALTH_CHECK_INTERVAL (line 257) - 注释已标记但代码中可能还有
+# - STREAM_IDLE_SEC (line 294)
+# - TRADE_TIMEOUT (line 295)
+# - ORDERBOOK_TIMEOUT (line 296)
+# - BACKOFF_RESET_SECS (line 299)
+# - DEDUP_LRU (line 313)
+# - QUEUE_DROP_THRESHOLD (line 317)
+# - OFI_MAX_LAG_MS (line 1229)
+# - OUTPUT_DIR (main函数中，line 2095)
+# - PREVIEW_DIR (line 105)
+# - SYMBOLS (main函数中，line 2090)
+# - RUN_HOURS (main函数中，line 2091)
+# - CVD_SIGMA_FLOOR_K, CVD_WINSOR, W_OFI, W_CVD, FUSION_CAL_K (这些不在harvester配置中，可保留env读取)
+# - PAPER_ENABLE (line 1425, 2028) - 业务逻辑标志，不在harvester配置中
+
 import asyncio
 import websockets
 import json
@@ -24,20 +45,48 @@ import math
 import sys
 import uuid  # 新增：用于生成唯一文件名
 
-# 添加项目路径
-THIS_DIR = os.path.dirname(os.path.abspath(__file__))
-CANDIDATE_PATHS = [
-    os.path.abspath(os.path.join(THIS_DIR, "..", "src")),
-    os.path.abspath(os.path.join(THIS_DIR, "..", "..", "src")),
-    os.path.abspath(os.path.join(THIS_DIR, "..", "..", "v13_ofi_ai_system", "src")),
-    os.path.abspath(os.path.join(THIS_DIR, "..")),  # 指向v13_ofi_ai_system目录
-    THIS_DIR,
-    os.getcwd(),
-]
-for p in CANDIDATE_PATHS:
-    if p not in sys.path:
-        sys.path.insert(0, p)
-        print(f"添加路径: {p}")
+# 环境变量白名单（仅允许这些env在严格模式下使用）
+ALLOWED_ENV = {
+    "CVD_SIGMA_FLOOR_K", "CVD_WINSOR", "W_OFI", "W_CVD", "FUSION_CAL_K", "PAPER_ENABLE",
+    "V13_DEV_PATHS"  # 开发模式路径注入
+}
+
+def _env(name: str, default=None, cast=lambda v: v):
+    """安全的环境变量读取（仅允许白名单）"""
+    if name not in ALLOWED_ENV:
+        raise RuntimeError(f"Env '{name}' not allowed in harvester strict mode (allowed: {ALLOWED_ENV})")
+    val = os.getenv(name, default)
+    if val is not None:
+        return cast(val)
+    return default
+
+# 添加项目路径（仅在开发模式）
+if _env("V13_DEV_PATHS", "0", str) == "1":
+    THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+    CANDIDATE_PATHS = [
+        os.path.abspath(os.path.join(THIS_DIR, "..", "src")),
+        os.path.abspath(os.path.join(THIS_DIR, "..", "..", "src")),
+        os.path.abspath(os.path.join(THIS_DIR, "..", "..", "v13_ofi_ai_system", "src")),
+        os.path.abspath(os.path.join(THIS_DIR, "..")),
+        THIS_DIR,
+        os.getcwd(),
+    ]
+    for p in CANDIDATE_PATHS:
+        if p not in sys.path:
+            sys.path.insert(0, p)
+
+# 设置日志（必须在导入前设置，以便后续使用logger）
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# 开发模式下记录路径注入（logger已定义）
+if _env("V13_DEV_PATHS", "0", str) == "1":
+    for p in CANDIDATE_PATHS:
+        if p in sys.path:
+            logger.debug(f"dev path added: {p}")
 
 # 导入核心组件
 try:
@@ -49,9 +98,9 @@ try:
     CVD_AVAILABLE = True
     FUSION_AVAILABLE = True
     DIVERGENCE_AVAILABLE = True
-    print("成功导入所有核心组件")
+    logger.info("成功导入所有核心组件")
 except ImportError as e:
-    print(f"警告: 无法导入核心组件: {e}")
+    logger.warning(f"无法导入核心组件: {e}")
     OFI_AVAILABLE = False
     CVD_AVAILABLE = False
     FUSION_AVAILABLE = False
@@ -66,13 +115,6 @@ except ImportError as e:
     DivergenceDetector = None
     DivergenceConfig = None
 
-# 设置日志
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
-
 # 稳定hash函数
 def stable_row_id(s):
     """生成稳定的row_id"""
@@ -81,29 +123,32 @@ def stable_row_id(s):
 class SuccessOFICVDHarvester:
     """成功版OFI+CVD数据采集器（基于Task 1.2.5成功实现）"""
     
-    def __init__(self, symbols=None, run_hours=24, output_dir=None):
-        self.symbols = symbols or ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT"]
-        self.run_hours = run_hours
+    def __init__(self, cfg: dict = None, *, compat_env: bool = False, symbols=None, run_hours=24, output_dir=None):
+        """
+        初始化Harvester（统一配置模式）
         
-        # 使用固定的绝对路径，确保每次运行都使用相同的目录
-        # 获取脚本所在目录的绝对路径作为基础目录
+        Args:
+            cfg: 配置字典（来自运行时包），如果为None则使用向后兼容模式
+            compat_env: 兼容环境变量模式（下一版本将移除，默认False）
+            symbols: 向后兼容参数（仅当cfg=None时使用）
+            run_hours: 向后兼容参数（实际不再使用，组件支持7x24小时连续运行）
+            output_dir: 向后兼容参数（仅当cfg=None时使用）
+        """
+        # 第2步：修改构造函数签名，接收cfg子树
+        self.cfg = cfg or {}
+        self._compat_env = compat_env
+        
+        # 基础目录和时间（所有模式都需要）
         self.base_dir = Path(__file__).parent.absolute()
-        
-        if output_dir is None:
-            # 固定数据目录路径
-            output_dir = self.base_dir / "data" / "ofi_cvd"
-        
-        self.output_dir = Path(output_dir)
+        self.run_hours = run_hours
         self.start_time = datetime.now().timestamp()
         self.end_time = self.start_time + (run_hours * 3600)
         
-        # 预览/权威分仓配置 - 使用固定的绝对路径
-        self.preview_kinds = {'ofi', 'cvd', 'fusion', 'events', 'features'}
-        preview_dir = self.base_dir / "preview" / "ofi_cvd"
-        self.preview_dir = Path(os.getenv('PREVIEW_DIR', str(preview_dir)))
+        # 第3步：从cfg映射所有字段（在_apply_cfg中实现）
+        self._apply_cfg(symbols, output_dir)
         
-        # 固定artifacts目录路径
-        self.artifacts_dir = self.base_dir / "artifacts"
+        # 预览/权威分仓配置
+        self.preview_kinds = {'ofi', 'cvd', 'fusion', 'events', 'features'}
         
         # 创建输出目录结构
         self._create_directory_structure()
@@ -118,26 +163,10 @@ class SuccessOFICVDHarvester:
             'orderbook': {symbol: [] for symbol in self.symbols},  # 新增订单簿数据缓冲区
             'features': {symbol: [] for symbol in self.symbols}  # 新增特征对齐宽表缓冲区
         }
-        # 缓冲水位线（高水位触发落盘，紧急水位触发溢写；prices/orderbook为权威流只落不丢）
-        self.buffer_high = {
-            'prices': 20000, 'orderbook': 12000,
-            'ofi': 8000, 'cvd': 8000, 'fusion': 5000, 'events': 5000, 'features': 8000
-        }
-        self.buffer_emergency = {
-            'prices': 40000, 'orderbook': 24000,
-            'ofi': 16000, 'cvd': 16000, 'fusion': 10000, 'events': 10000, 'features': 16000
-        }
-        
         # 极端流量保护：动态轮转间隔
         self.extreme_traffic_mode = False
-        self.extreme_traffic_threshold = int(os.getenv('EXTREME_TRAFFIC_THRESHOLD', '30000'))  # prices缓冲区阈值
-        self.normal_rotate_sec = None  # 先占位，等会儿再赋值
-        self.extreme_rotate_sec = int(os.getenv('EXTREME_ROTATE_SEC', '30'))  # 极端流量下的轮转间隔
         
-        # 文件大小控制
-        self.max_rows_per_file = int(os.getenv('MAX_ROWS_PER_FILE', '50000'))  # 单文件最大行数
-        # 落盘并发限流 & 死信（deadletter）目录
-        self.save_semaphore = asyncio.Semaphore(int(os.getenv("SAVE_CONCURRENCY", "2")))
+        # 死信（deadletter）目录（已在_apply_cfg中设置artifacts_dir，这里只需创建子目录）
         self.deadletter_dir = self.artifacts_dir / "deadletter"
         self.deadletter_dir.mkdir(parents=True, exist_ok=True)
         
@@ -145,7 +174,8 @@ class SuccessOFICVDHarvester:
         self.orderbooks = {symbol: {} for symbol in self.symbols}
         
         # 订单簿快照队列（用于时间对齐）
-        self.orderbook_buf = {symbol: deque(maxlen=256) for symbol in self.symbols}
+        # orderbook_buf_len已在_apply_cfg中设置
+        self.orderbook_buf = {symbol: deque(maxlen=self.orderbook_buf_len) for symbol in self.symbols}
         
         # 2×2场景标签计算缓存
         self.scene_cache = {}
@@ -249,13 +279,10 @@ class SuccessOFICVDHarvester:
         # 单调时钟（避免NTP回拨影响轮转和健康检查）
         self._mono = time.monotonic
         
-        # 健康监控
+        # 健康监控（data_timeout和max_connection_errors已在_apply_cfg中设置）
         self.last_health_check = self._mono()
-        self.health_check_interval = int(os.getenv('HEALTH_CHECK_INTERVAL', '25'))  # 25秒健康检查（更快发现软性停滞）
         self.connection_errors = 0
-        self.max_connection_errors = 10
         self.last_data_time = {symbol: self._mono() for symbol in self.symbols}
-        self.data_timeout = 300  # 5分钟数据超时
         
         # 补丁B：分流监控时间戳
         self.last_trade_time = {symbol: self._mono() for symbol in self.symbols}
@@ -270,27 +297,8 @@ class SuccessOFICVDHarvester:
         # 每小时写盘行数统计
         self.hourly_write_counts = {kind: 0 for kind in ['prices', 'orderbook', 'ofi', 'cvd', 'fusion', 'events', 'features']}
         
-        # CVD计算参数（缓存到实例字段，避免热路径环境变量查询）
-        self.cvd_sigma_floor_k = float(os.getenv('CVD_SIGMA_FLOOR_K', '0.3'))
-        self.cvd_winsor = float(os.getenv('CVD_WINSOR', '2.5'))
-        
-        # 融合计算参数（缓存到实例字段）
-        self.w_ofi = float(os.getenv('W_OFI', '0.6'))
-        self.w_cvd = float(os.getenv('W_CVD', '0.4'))
-        self.fusion_cal_k = float(os.getenv('FUSION_CAL_K', '1.0'))
-        
-        # 环境变量配置
-        self.win_secs = int(os.getenv('WIN_SECS', '300'))
-        self.active_tps = float(os.getenv('ACTIVE_TPS', '0.1'))  # 进一步降低阈值，确保有Active场景
-        self.vol_split = float(os.getenv('VOL_SPLIT', '0.5'))  # 调整波动阈值
-        self.fee_tier = os.getenv('FEE_TIER', 'TM')
-        self.parquet_rotate_sec = int(os.getenv('PARQUET_ROTATE_SEC', '60'))  # 60秒轮转
-        self.normal_rotate_sec = self.parquet_rotate_sec  # 现在再赋值，安全
-        
-        # 补丁A：流超时配置（确保读超时重连早于健康告警）
-        self.stream_idle_sec = int(os.getenv('STREAM_IDLE_SEC', '120'))  # 流空闲超时秒数
-        self.trade_timeout = int(os.getenv('TRADE_TIMEOUT', '150'))      # 交易流超时秒数（120+30s缓冲）
-        self.orderbook_timeout = int(os.getenv('ORDERBOOK_TIMEOUT', '180'))  # 订单簿流超时秒数（120+60s缓冲）
+        # CVD/Fusion计算参数（保留环境变量读取，因为这些不在harvester配置中）
+        # 这些参数已在上面从配置或环境变量读取
         
         # 轮转定时器 - 使用单调时钟避免NTP回拨影响
         self.last_rotate_time = self._mono()
@@ -304,11 +312,11 @@ class SuccessOFICVDHarvester:
         
         # 去重缓存
         self.dedup_cache = {}  # {symbol: OrderedDict of trade_ids}
-        self.dedup_lru_size = int(os.getenv('DEDUP_LRU', '32768'))  # 从8192增加到32768以降低队列丢弃率
+        # dedup_lru_size已在上面从配置读取（cfg模式或环境变量模式）
         
         # 丢弃计数监控
         self.last_queue_dropped = 0
-        self.queue_drop_threshold = int(os.getenv('QUEUE_DROP_THRESHOLD', '1000'))  # 丢弃计数告警阈值
+        # queue_drop_threshold已在上面从配置读取（cfg模式或环境变量模式）
         self.consecutive_drop_rounds = 0  # 连续丢弃轮数
         
         # Features去重游标（防止同一秒重复入表）
@@ -319,10 +327,11 @@ class SuccessOFICVDHarvester:
                 'A_H': 0, 'A_L': 0, 'Q_H': 0, 'Q_L': 0
             }
         
-        logger.info(f"初始化成功版采集器: {self.symbols}, 运行{run_hours}小时")
+        logger.info(f"初始化成功版采集器: {self.symbols}, 支持7x24小时连续运行")
         logger.info(f"OFI计算器状态: {'可用' if OFI_AVAILABLE else '不可用'}")
         logger.info(f"场景标签配置: WIN_SECS={self.win_secs}, ACTIVE_TPS={self.active_tps}, VOL_SPLIT={self.vol_split}")
         logger.info(f"补丁A配置: STREAM_IDLE_SEC={self.stream_idle_sec}, TRADE_TIMEOUT={self.trade_timeout}, ORDERBOOK_TIMEOUT={self.orderbook_timeout}")
+        logger.info(f"退避复位配置: BACKOFF_RESET_SECS={self.backoff_reset_secs}秒")
         
         # 校验超时阈值关系
         if self.stream_idle_sec >= self.trade_timeout:
@@ -336,12 +345,171 @@ class SuccessOFICVDHarvester:
             logger.info(f"[CONFIG] 超时关系校验: STREAM_IDLE_SEC({self.stream_idle_sec}) < ORDERBOOK_TIMEOUT({self.orderbook_timeout}) ✓")
         logger.info(f"健康检查间隔: {self.health_check_interval}秒")
         logger.info(f"极端流量保护: 阈值={self.extreme_traffic_threshold}, 正常轮转={self.normal_rotate_sec}s, 极端轮转={self.extreme_rotate_sec}s")
-        logger.info(f"保存并发度: {self.save_semaphore._value}")
+        logger.info(f"保存并发度: {self.save_concurrency}")
         logger.info(f"文件大小控制: 最大行数={self.max_rows_per_file}, 去重LRU={self.dedup_lru_size}")
         logger.info(f"丢弃计数监控: 阈值={self.queue_drop_threshold}")
         
         # 生成run_manifest（增强可复现性）
         self._generate_run_manifest()
+    
+    def _apply_cfg(self, symbols=None, output_dir=None):
+        """
+        第3步：从cfg映射所有字段（引入默认值）
+        如果cfg为空且compat_env=True，使用向后兼容的环境变量模式
+        否则cfg为空直接报错（避免生产无意走回老路）
+        """
+        c = self.cfg
+        
+        # 兼容模式：cfg为空时使用环境变量（仅在compat_env=True时允许）
+        if not c:
+            if not self._compat_env:
+                raise ValueError("harvester: cfg is empty but compat_env=False; refuse env fallback (use --compat-global-config or provide runtime package)")
+            # 向后兼容：从环境变量读取
+            self.symbols = symbols or os.getenv('SYMBOLS', 'BTCUSDT,ETHUSDT,BNBUSDT,SOLUSDT,XRPUSDT,DOGEUSDT').split(',')
+            
+            if output_dir is None:
+                output_dir = os.getenv('OUTPUT_DIR', str(self.base_dir / "data" / "ofi_cvd"))
+            self.output_dir = Path(output_dir)
+            
+            preview_dir_env = os.getenv('PREVIEW_DIR')
+            if preview_dir_env:
+                self.preview_dir = Path(preview_dir_env)
+            else:
+                self.preview_dir = self.base_dir / "preview" / "ofi_cvd"
+            
+            self.artifacts_dir = self.base_dir / "artifacts"
+            
+            # 从环境变量读取所有配置
+            self.buffer_high = {
+                'prices': 20000, 'orderbook': 12000,
+                'ofi': 8000, 'cvd': 8000, 'fusion': 5000, 'events': 5000, 'features': 8000
+            }
+            self.buffer_emergency = {
+                'prices': 40000, 'orderbook': 24000,
+                'ofi': 16000, 'cvd': 16000, 'fusion': 10000, 'events': 10000, 'features': 16000
+            }
+            self.extreme_traffic_threshold = int(os.getenv('EXTREME_TRAFFIC_THRESHOLD', '30000'))
+            self.extreme_rotate_sec = int(os.getenv('EXTREME_ROTATE_SEC', '30'))
+            self.max_rows_per_file = int(os.getenv('MAX_ROWS_PER_FILE', '50000'))
+            self.save_concurrency = int(os.getenv("SAVE_CONCURRENCY", "2"))
+            self.save_semaphore = asyncio.Semaphore(self.save_concurrency)
+            self.health_check_interval = int(os.getenv('HEALTH_CHECK_INTERVAL', '25'))
+            self.win_secs = int(os.getenv('WIN_SECS', '300'))
+            self.active_tps = float(os.getenv('ACTIVE_TPS', '0.1'))
+            self.vol_split = float(os.getenv('VOL_SPLIT', '0.5'))
+            self.fee_tier = os.getenv('FEE_TIER', 'TM')
+            self.parquet_rotate_sec = int(os.getenv('PARQUET_ROTATE_SEC', '60'))
+            self.normal_rotate_sec = self.parquet_rotate_sec
+            self.stream_idle_sec = int(os.getenv('STREAM_IDLE_SEC', '120'))
+            self.trade_timeout = int(os.getenv('TRADE_TIMEOUT', '150'))
+            self.orderbook_timeout = int(os.getenv('ORDERBOOK_TIMEOUT', '180'))
+            self.backoff_reset_secs = int(os.getenv('BACKOFF_RESET_SECS', '300'))
+            self.dedup_lru_size = int(os.getenv('DEDUP_LRU', '32768'))
+            self.queue_drop_threshold = int(os.getenv('QUEUE_DROP_THRESHOLD', '1000'))
+            self.ofi_max_lag_ms = int(os.getenv('OFI_MAX_LAG_MS', '800'))
+            
+            # 运行期工况常量（兼容模式下使用默认值）
+            self.orderbook_buf_len = 1024
+            self.features_lookback_secs = 60
+            
+            # 健康监控配置（兼容模式使用默认值）
+            self.data_timeout = 300
+            self.max_connection_errors = 10
+            
+            # 保存并发数（兼容模式）
+            self.save_concurrency = int(os.getenv("SAVE_CONCURRENCY", "2"))
+            self.save_semaphore = asyncio.Semaphore(self.save_concurrency)
+            
+            # CVD/Fusion参数（不在harvester配置中，使用白名单env读取）
+            self.cvd_sigma_floor_k = float(_env('CVD_SIGMA_FLOOR_K', '0.3'))
+            self.cvd_winsor = float(_env('CVD_WINSOR', '2.5'))
+            self.w_ofi = float(_env('W_OFI', '0.6'))
+            self.w_cvd = float(_env('W_CVD', '0.4'))
+            self.fusion_cal_k = float(_env('FUSION_CAL_K', '1.0'))
+        else:
+            # 新格式：从配置字典读取（严格运行时模式）
+            # 1) 符号与路径
+            self.symbols = c.get("symbols", ["BTCUSDT", "ETHUSDT"])
+            if symbols is not None:
+                self.symbols = symbols  # 命令行参数优先
+            
+            paths = c.get("paths", {})
+            base_dir = self.base_dir
+            output_dir_cfg = paths.get("output_dir", "./data/ofi_cvd")
+            if output_dir is not None:
+                self.output_dir = Path(output_dir)
+            elif not Path(output_dir_cfg).is_absolute():
+                self.output_dir = base_dir / output_dir_cfg
+            else:
+                self.output_dir = Path(output_dir_cfg)
+            
+            preview_dir_cfg = paths.get("preview_dir", "./preview/ofi_cvd")
+            if not Path(preview_dir_cfg).is_absolute():
+                self.preview_dir = base_dir / preview_dir_cfg
+            else:
+                self.preview_dir = Path(preview_dir_cfg)
+            
+            artifacts_dir_cfg = paths.get("artifacts_dir", "./artifacts")
+            if not Path(artifacts_dir_cfg).is_absolute():
+                self.artifacts_dir = base_dir / artifacts_dir_cfg
+            else:
+                self.artifacts_dir = Path(artifacts_dir_cfg)
+            
+            # 2) 缓存/并发/文件旋转
+            bufs = c.get("buffers", {})
+            self.buffer_high = bufs.get("high", {
+                "prices": 20000, "orderbook": 12000, "ofi": 8000, "cvd": 8000, 
+                "fusion": 5000, "events": 5000, "features": 8000
+            })
+            self.buffer_emergency = bufs.get("emergency", {
+                "prices": 40000, "orderbook": 24000, "ofi": 16000, "cvd": 16000,
+                "fusion": 10000, "events": 10000, "features": 16000
+            })
+            
+            files = c.get("files", {})
+            self.max_rows_per_file = int(files.get("max_rows_per_file", 50000))
+            self.parquet_rotate_sec = int(files.get("parquet_rotate_sec", 60))
+            self.normal_rotate_sec = self.parquet_rotate_sec
+            
+            # 保存并发数（避免访问Semaphore._value）
+            self.save_concurrency = int(c.get("concurrency", {}).get("save_concurrency", 2))
+            self.save_semaphore = asyncio.Semaphore(self.save_concurrency)
+            
+            # 3) 超时/门限/健康
+            tmo = c.get("timeouts", {})
+            self.health_check_interval = int(tmo.get("health_check_interval", 25))
+            self.stream_idle_sec = int(tmo.get("stream_idle_sec", 120))
+            self.trade_timeout = int(tmo.get("trade_timeout", 150))
+            self.orderbook_timeout = int(tmo.get("orderbook_timeout", 180))
+            self.backoff_reset_secs = int(tmo.get("backoff_reset_secs", 300))
+            
+            # 健康监控配置（从health子树读取，或timeouts兼容）
+            health = c.get("health", {})
+            self.data_timeout = int(health.get("data_timeout", tmo.get("data_timeout", 300)))
+            self.max_connection_errors = int(health.get("max_connection_errors", 10))
+            
+            th = c.get("thresholds", {})
+            self.extreme_traffic_threshold = int(th.get("extreme_traffic_threshold", 30000))
+            self.extreme_rotate_sec = int(th.get("extreme_rotate_sec", 30))
+            self.ofi_max_lag_ms = int(th.get("ofi_max_lag_ms", 800))
+            
+            # 4) 去重/场景
+            ded = c.get("dedup", {})
+            self.dedup_lru_size = int(ded.get("lru_size", 32768))
+            self.queue_drop_threshold = int(ded.get("queue_drop_threshold", 1000))
+            
+            sc = c.get("scenario", {})
+            self.win_secs = int(sc.get("win_secs", 300))
+            self.active_tps = float(sc.get("active_tps", 0.1))
+            self.vol_split = float(sc.get("vol_split", 0.5))
+            self.fee_tier = sc.get("fee_tier", "TM")
+            
+            # CVD/Fusion参数（不在harvester配置中，使用白名单env读取）
+            self.cvd_sigma_floor_k = float(_env('CVD_SIGMA_FLOOR_K', '0.3'))
+            self.cvd_winsor = float(_env('CVD_WINSOR', '2.5'))
+            self.w_ofi = float(_env('W_OFI', '0.6'))
+            self.w_cvd = float(_env('W_CVD', '0.4'))
+            self.fusion_cal_k = float(_env('FUSION_CAL_K', '1.0'))
     
     def _check_health(self):
         """健康检查：监控数据流和连接状态（补丁B：分流监控 + 子流超时检测）"""
@@ -426,12 +594,12 @@ class SuccessOFICVDHarvester:
                     'processor': platform.processor()
                 },
                 'parameters': {
-                    'cvd_sigma_floor_k': float(os.getenv('CVD_SIGMA_FLOOR_K', '0.3')),
-                    'cvd_winsor': float(os.getenv('CVD_WINSOR', '2.5')),
-                    'w_ofi': float(os.getenv('W_OFI', '0.6')),
-                    'w_cvd': float(os.getenv('W_CVD', '0.4')),
-                    'fusion_cal_k': float(os.getenv('FUSION_CAL_K', '1.0')),
-                    'paper_enable': os.getenv('PAPER_ENABLE', '0')
+                    'cvd_sigma_floor_k': float(_env('CVD_SIGMA_FLOOR_K', '0.3')),
+                    'cvd_winsor': float(_env('CVD_WINSOR', '2.5')),
+                    'w_ofi': float(_env('W_OFI', '0.6')),
+                    'w_cvd': float(_env('W_CVD', '0.4')),
+                    'fusion_cal_k': float(_env('FUSION_CAL_K', '1.0')),
+                    'paper_enable': _env('PAPER_ENABLE', '0')
                 }
             }
             
@@ -453,7 +621,7 @@ class SuccessOFICVDHarvester:
         try:
             # 仅处理"最近窗口 + 上次未处理后的增量秒"，避免O(N)全表扫描
             current_time = time.time()
-            lookback_seconds = 60
+            lookback_seconds = self.features_lookback_secs
             start_ms = max(int((current_time - lookback_seconds) * 1000),
                            (self.last_feature_second.get(symbol, 0) + 1) * 1000)
             def _collect_recent(buf):
@@ -528,9 +696,11 @@ class SuccessOFICVDHarvester:
                     features_by_second[second_ts]['lag_ms_fusion'] = data.get('lag_ms_trade', 0)
             
             # 补齐盘口强相关字段（精确时间对齐）
+            max_lag_ms = 5000  # Features对齐宽松度：5秒
+            logger.debug(f"[FEATURES_ALIGNMENT] {symbol} 使用max_lag_ms={max_lag_ms}进行orderbook时间对齐")
             for second_ts in features_by_second:
                 # 使用精确的orderbook快照，确保时间对齐
-                ob_snapshot = self._pick_orderbook_snapshot(symbol, second_ts * 1000, max_lag_ms=5000)
+                ob_snapshot = self._pick_orderbook_snapshot(symbol, second_ts * 1000, max_lag_ms=max_lag_ms)
                 if ob_snapshot:
                     features_by_second[second_ts]['best_bid'] = ob_snapshot.get('best_bid')
                     features_by_second[second_ts]['best_ask'] = ob_snapshot.get('best_ask')
@@ -656,7 +826,7 @@ class SuccessOFICVDHarvester:
             
             # 标准化格式
             def topk_pad(levels, k, reverse=False):
-                """填充到K档，不足补0"""
+                """填充到K档，不足补0（Binance深度已按价格序给出，无需重排序）"""
                 result = []
                 for level in (levels[:k] if levels else []):
                     if isinstance(level, (list, tuple)) and len(level) >= 2:
@@ -665,7 +835,7 @@ class SuccessOFICVDHarvester:
                         result.append((price, qty))
                 while len(result) < k:
                     result.append((0.0, 0.0))
-                result.sort(key=lambda x: x[0], reverse=reverse)
+                # Binance深度数据本身已按价格序给出，省去sort步骤以节省CPU
                 return result[:k]
             
             return {
@@ -1238,8 +1408,8 @@ class SuccessOFICVDHarvester:
             lag_ms_to_trade = 0
             alignment_source = 'none'  # 'strict', 'fallback', 'none'
             
-            # 允许从环境变量调整对齐门槛（默认800ms）
-            max_lag_ms = int(os.getenv('OFI_MAX_LAG_MS', '800'))
+            # 使用配置的OFI最大滞后（已在构造函数中从配置读取）
+            max_lag_ms = getattr(self, "ofi_max_lag_ms", 800)
             
             # 选择最接近交易时间的订单簿快照
             ob_snapshot = self._pick_orderbook_snapshot(symbol, event_ts_ms, max_lag_ms=max_lag_ms)
@@ -1413,7 +1583,7 @@ class SuccessOFICVDHarvester:
             self.stats['total_trades'][symbol] += 1
             
             # 发布实时特征到core_algo_paper（空值兜底）
-            if os.getenv("PAPER_ENABLE", "0") == "1" and hasattr(self, "paper") and self.paper:
+            if _env("PAPER_ENABLE", "0") == "1" and hasattr(self, "paper") and self.paper:
                 await self.paper.on_feature({
                     "symbol": symbol,
                     "ts_ms": event_ts_ms,
@@ -1663,14 +1833,25 @@ class SuccessOFICVDHarvester:
                     logger.info(f"执行定时轮转: {current_time - self.last_rotate_time:.1f}秒 (模式: {mode_str})")
                     
                     # 补丁增强：轮转时输出关键统计指标
+                    # 全局LRU逐出增量（循环外计算一次，避免重复计算）
+                    queue_dropped_delta = self.queue_dropped - getattr(self, 'last_rotate_queue_dropped', 0)
+                    
                     for symbol in self.symbols:
                         trade_delta_s = current_time - self.last_trade_time[symbol]
                         ob_delta_s = current_time - self.last_ob_time[symbol]
                         buffer_sizes = {kind: len(self.data_buffers[kind][symbol]) for kind in self.data_buffers}
-                        queue_dropped_delta = self.queue_dropped - getattr(self, 'last_rotate_queue_dropped', 0)
-                        logger.info(f"[ROTATE] {symbol}: trade_delta={trade_delta_s:.1f}s, ob_delta={ob_delta_s:.1f}s, "
-                                  f"buffers={buffer_sizes}, reconnect_count={self.reconnect_count}, mode={mode_str}, "
-                                  f"lru_evict_delta={queue_dropped_delta}")
+                        
+                        # 智能日志级别：正常情况DEBUG，异常情况INFO/WARN
+                        has_anomaly = (queue_dropped_delta > 0 or 
+                                     trade_delta_s > self.trade_timeout * 0.8 or 
+                                     ob_delta_s > self.orderbook_timeout * 0.8 or
+                                     self.reconnect_count > 0 or
+                                     getattr(self, 'substream_timeout_detected', False))
+                        
+                        log_level = logger.warning if has_anomaly else logger.debug
+                        log_level(f"[ROTATE] {symbol}: trade_delta={trade_delta_s:.1f}s, ob_delta={ob_delta_s:.1f}s, "
+                                f"buffers={buffer_sizes}, reconnect_count={self.reconnect_count}, mode={mode_str}, "
+                                f"lru_evict_delta={queue_dropped_delta}")
                     
                     # 记录本轮轮转的queue_dropped计数
                     self.last_rotate_queue_dropped = self.queue_dropped
@@ -1679,12 +1860,24 @@ class SuccessOFICVDHarvester:
                     if queue_dropped_delta > 0:
                         self.consecutive_drop_rounds += 1
                         if self.consecutive_drop_rounds >= 2:
-                            logger.warning(f"[DEDUP_WARNING] 连续{self.consecutive_drop_rounds}轮发生LRU逐出（delta={queue_dropped_delta}），可能存在重复流/重放源")
+                            # 收集当前缓冲区快照便于排障
+                            buffer_snapshot = {}
+                            for symbol in self.symbols:
+                                buffer_snapshot[symbol] = {kind: len(self.data_buffers[kind][symbol]) for kind in self.data_buffers}
+                            logger.warning(f"[DEDUP_WARNING] 连续{self.consecutive_drop_rounds}轮发生LRU逐出（delta={queue_dropped_delta}），可能存在重复流/重放源，缓冲区快照: {buffer_snapshot}")
                     else:
                         self.consecutive_drop_rounds = 0  # 重置连续计数
                     
                     # 先生成特征（不持锁，避免阻塞；此处仅用当前缓冲的尾部数据）
                     for symbol in self.symbols:
+                        # 特征生成日志降噪：只在异常时输出INFO
+                        has_anomaly = (queue_dropped_delta > 0 or 
+                                     getattr(self, 'substream_timeout_detected', False) or
+                                     self.reconnect_count > 0)
+                        if has_anomaly:
+                            logger.info(f"[FEATURES_GEN] {symbol} 生成特征表（异常状态）")
+                        else:
+                            logger.debug(f"[FEATURES_GEN] {symbol} 生成特征表")
                         self._generate_features_table(symbol)
                         # 权威库
                         for kind in ['prices', 'orderbook']:
@@ -1793,13 +1986,18 @@ class SuccessOFICVDHarvester:
         logger.info(f"连接统一订单簿流: {len(self.symbols)}个symbol")
         
         backoff = 1.0
-        while self.running and datetime.now().timestamp() < self.end_time:
+        stable_connection_start = None  # 稳定连接开始时间
+        while self.running:
             try:
                 # 创建两个并发任务
                 tasks = {
                     asyncio.create_task(self._handle_unified_trade_stream(trade_url)),
                     asyncio.create_task(self._handle_unified_orderbook_stream(orderbook_url)),
                 }
+                
+                # 记录连接开始时间（用于稳定连接检测）
+                if stable_connection_start is None:
+                    stable_connection_start = time.time()
                 
                 # 关键改进：使用FIRST_COMPLETED模式，任一子流异常立即取消另一个并整体重连
                 done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
@@ -1813,20 +2011,33 @@ class SuccessOFICVDHarvester:
                         pass
                 
                 # 检查是否有任务异常完成
+                has_exception = False
                 for task in done:
                     try:
                         await task
                     except Exception as e:
                         logger.warning(f"子流异常完成: {e}")
+                        has_exception = True
                 
-                # 正常退出或到期，退出循环
-                if not self.running or datetime.now().timestamp() >= self.end_time:
+                # 稳定连接检测：如果连接稳定超过配置阈值且无异常，重置退避
+                if not has_exception and stable_connection_start:
+                    stable_duration = time.time() - stable_connection_start
+                    if stable_duration > self.backoff_reset_secs:
+                        if backoff > 1.0:
+                            logger.info(f"连接稳定{stable_duration:.0f}秒，重置退避从{backoff:.1f}到1.0")
+                            backoff = 1.0
+                
+                # 正常退出，退出循环
+                if not self.running:
                     break
                 
                 # 小退避后继续下一轮，统一重连
                 logger.info(f"统一流重连(#{self.reconnect_count + 1})")
                 await asyncio.sleep(min(5.0, backoff))
                 backoff = min(60.0, backoff * 1.5)  # 温和退避
+                
+                # 重置稳定连接计时
+                stable_connection_start = None
                 
             except Exception as e:
                 self.reconnect_count += 1
@@ -1841,10 +2052,11 @@ class SuccessOFICVDHarvester:
             async with websockets.connect(url, ping_interval=20, ping_timeout=10, max_size=2**23, close_timeout=5) as websocket:
                 logger.info("统一交易流连接成功")
                 
-                while self.running and datetime.now().timestamp() <= self.end_time:
+                while self.running:
                     try:
-                        # 补丁A：关键 - 带超时的单次接收，避免"无消息永远卡住"
-                        message = await asyncio.wait_for(websocket.recv(), timeout=self.stream_idle_sec)
+                        # 修复：使用 trade_timeout 专用阈值（而非 stream_idle_sec），防止假死不重连
+                        # 一旦超过 trade_timeout 未收到成交，就抛 TimeoutError，统一连接协程会自愈重连
+                        message = await asyncio.wait_for(websocket.recv(), timeout=self.trade_timeout)
                         
                         data = json.loads(message)
                         
@@ -1873,7 +2085,7 @@ class SuccessOFICVDHarvester:
                         await self._generate_slices_manifest()
                         
                     except asyncio.TimeoutError:
-                        logger.warning(f"[TRADE] {self.stream_idle_sec}s 未收到消息，触发重连")
+                        logger.warning(f"[TRADE] {self.trade_timeout}s 未收到消息，触发重连")
                         raise  # 跑到外层 except，令外层循环重建连接
                     except websockets.exceptions.ConnectionClosed:
                         logger.warning("[TRADE] WebSocket连接关闭，触发重连")
@@ -1897,10 +2109,11 @@ class SuccessOFICVDHarvester:
             async with websockets.connect(url, ping_interval=20, ping_timeout=10, max_size=2**23, close_timeout=5) as websocket:
                 logger.info("统一订单簿流连接成功")
                 
-                while self.running and datetime.now().timestamp() <= self.end_time:
+                while self.running:
                     try:
-                        # 补丁A：关键 - 带超时的单次接收，避免"无消息永远卡住"
-                        message = await asyncio.wait_for(websocket.recv(), timeout=self.stream_idle_sec)
+                        # 修复：使用 orderbook_timeout 专用阈值（而非 stream_idle_sec），防止假死不重连
+                        # 一旦超过 orderbook_timeout 未收到订单簿更新，就抛 TimeoutError，统一连接协程会自愈重连
+                        message = await asyncio.wait_for(websocket.recv(), timeout=self.orderbook_timeout)
                         
                         # 正确解析symbol + 传入解析器
                         data = json.loads(message)
@@ -1919,7 +2132,7 @@ class SuccessOFICVDHarvester:
                         await self._check_and_rotate_data()
                         
                     except asyncio.TimeoutError:
-                        logger.warning(f"[ORDERBOOK] {self.stream_idle_sec}s 未收到消息，触发重连")
+                        logger.warning(f"[ORDERBOOK] {self.orderbook_timeout}s 未收到消息，触发重连")
                         raise  # 跑到外层 except，令外层循环重建连接
                     except websockets.exceptions.ConnectionClosed:
                         logger.warning("[ORDERBOOK] WebSocket连接关闭，触发重连")
@@ -1952,6 +2165,12 @@ class SuccessOFICVDHarvester:
                     else:
                         logger.info(f"[HEALTH_SELF_CHECK] 超时关系正常: STREAM_IDLE_SEC({self.stream_idle_sec}) < TRADE_TIMEOUT({self.trade_timeout})")
                 
+                # 每小时进行一次完整的阈值关系检查（便于长期运行排障）
+                if self.health_check_counter % (3600 // self.health_check_interval) == 0:
+                    logger.info(f"[HEALTH_HOURLY_CHECK] 阈值关系检查: STREAM_IDLE_SEC({self.stream_idle_sec}) < TRADE_TIMEOUT({self.trade_timeout}) < ORDERBOOK_TIMEOUT({self.orderbook_timeout})")
+                    if not (self.stream_idle_sec < self.trade_timeout < self.orderbook_timeout):
+                        logger.warning(f"[HEALTH_HOURLY_CHECK] 阈值关系异常: 建议 STREAM_IDLE_SEC < TRADE_TIMEOUT < ORDERBOOK_TIMEOUT")
+                
                 # 定时也触发一次轮转，避免"没有新消息就不落盘"
                 await self._check_and_rotate_data()
                 
@@ -1967,7 +2186,7 @@ class SuccessOFICVDHarvester:
         logger.info("开始成功版数据采集（基于Task 1.2.5成功实现）...")
         
         # 初始化paper trader（如果启用）
-        if os.getenv("PAPER_ENABLE", "0") == "1":
+        if _env("PAPER_ENABLE", "0") == "1":
             try:
                 from core_algo_paper import start_paper_trader
                 self.paper = await start_paper_trader()
@@ -1990,13 +2209,8 @@ class SuccessOFICVDHarvester:
         tasks.append(health_check_task)
         
         try:
-            # 等待所有任务完成或超时
-            await asyncio.wait_for(
-                asyncio.gather(*tasks, return_exceptions=True),
-                timeout=self.run_hours * 3600
-            )
-        except asyncio.TimeoutError:
-            logger.info("达到运行时间限制")
+            # 等待所有任务完成（移除超时限制，支持7x24小时运行）
+            await asyncio.gather(*tasks, return_exceptions=True)
         except Exception as e:
             logger.error(f"运行错误: {e}")
         finally:
@@ -2032,17 +2246,64 @@ class SuccessOFICVDHarvester:
                           f"订单簿{self.stats['total_orderbook'][symbol]}")  # 添加订单簿统计
 
 async def main():
-    """主函数"""
-    # 从环境变量获取配置
-    symbols = os.getenv('SYMBOLS', 'BTCUSDT,ETHUSDT,BNBUSDT,SOLUSDT,XRPUSDT,DOGEUSDT').split(',')
-    run_hours = float(os.getenv('RUN_HOURS', '24'))
-    # 使用固定的绝对路径，确保数据保存到正确位置
-    script_dir = Path(__file__).parent.absolute()
-    default_output_dir = script_dir / "data" / "ofi_cvd"
-    output_dir = os.getenv('OUTPUT_DIR', str(default_output_dir))
+    """主函数 - 支持7x24小时连续运行 + 严格运行时配置"""
+    import argparse
     
-    # 创建成功版采集器
-    harvester = SuccessOFICVDHarvester(symbols, run_hours, output_dir)
+    parser = argparse.ArgumentParser(description='OFI+CVD数据采集器')
+    parser.add_argument("--config", type=str, default=None,
+                       help="显式指定运行时包路径（默认使用dist/config/harvester.runtime.current.yaml或V13_HARVESTER_RUNTIME_PACK）")
+    parser.add_argument("--dry-run-config", action="store_true",
+                       help="仅验证配置，不运行采集器")
+    parser.add_argument("--compat-global-config", action="store_true",
+                       help="启用兼容模式：使用全局配置目录（临时过渡选项）")
+    args = parser.parse_args()
+    
+    # 加载严格运行时配置（优先）
+    try:
+        from v13conf.runtime_loader import load_component_runtime_config, print_component_effective_config
+        
+        # 读取严格运行包
+        cfg = load_component_runtime_config(
+            component="harvester",
+            pack_path=args.config,
+            compat_global=args.compat_global_config,
+            verify_scenarios_snapshot=False  # harvester不需要场景快照验证
+        )
+        
+        # 打印有效配置
+        print_component_effective_config(cfg, component="harvester")
+        
+        if args.dry_run_config:
+            print("\n[DRY-RUN] 配置验证通过，退出")
+            return
+        
+        # 提取harvester配置子树
+        harvester_cfg = cfg.get('components', {}).get('harvester', {})
+        
+        if not harvester_cfg:
+            raise ValueError("运行时包中未找到components.harvester配置")
+        
+        # 创建采集器（使用配置注入）
+        harvester = SuccessOFICVDHarvester(cfg=harvester_cfg)
+        
+    except ImportError as e:
+        # 降级：使用向后兼容模式
+        import warnings
+        warnings.warn(f"无法加载统一配置系统: {e}，降级到环境变量模式", UserWarning)
+        
+        symbols = os.getenv('SYMBOLS', 'BTCUSDT,ETHUSDT,BNBUSDT,SOLUSDT,XRPUSDT,DOGEUSDT').split(',')
+        run_hours = float(os.getenv('RUN_HOURS', '87600'))
+        script_dir = Path(__file__).parent.absolute()
+        default_output_dir = script_dir / "data" / "ofi_cvd"
+        output_dir = os.getenv('OUTPUT_DIR', str(default_output_dir))
+        
+        harvester = SuccessOFICVDHarvester(
+            cfg=None,
+            compat_env=True,  # 关键：显式允许 env 回退
+            symbols=symbols,
+            run_hours=run_hours,
+            output_dir=output_dir
+        )
     
     # 运行采集
     await harvester.run()

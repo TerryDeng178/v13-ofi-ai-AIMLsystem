@@ -1,0 +1,62 @@
+[Unit]
+Description=OFI+CVD Data Collection Daemon
+Documentation=https://github.com/yourrepo/ofi_cvd_framework
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/path/to/v13_ofi_ai_system
+ExecStart=/usr/bin/python3 tools/harvestd.py
+Restart=always
+RestartSec=3
+
+# Environment variables
+Environment=PYTHONIOENCODING=UTF-8
+Environment=PYTHONUTF8=1
+
+# Daemon configuration
+Environment=HARVESTD_PORT=8088
+Environment=VALIDATE_INTERVAL_MIN=60
+Environment=RESTART_BACKOFF_MAX_SEC=60
+Environment=DQ_FAIL_MAX_TOL=2
+Environment=LOG_TAIL_LINES=200
+
+# Data collection configuration (from Task 1.3.1)
+Environment=SYMBOLS=BTCUSDT,ETHUSDT,BNBUSDT,XRPUSDT,ADAUSDT,SOLUSDT
+Environment=RUN_HOURS=72
+Environment=PARQUET_ROTATE_SEC=60
+Environment=WSS_PING_INTERVAL=20
+Environment=WSS_HEARTBEAT_TIMEOUT=30
+Environment=WSS_RECONNECT_DELAY=1.0
+Environment=WSS_MAX_RECONNECT_ATTEMPTS=10
+Environment=DEDUP_LRU=8192
+
+# CVD configuration
+Environment=Z_MODE=delta
+Environment=SCALE_MODE=hybrid
+Environment=MAD_MULTIPLIER=1.8
+Environment=SCALE_FAST_WEIGHT=0.20
+Environment=HALF_LIFE_SEC=600
+Environment=WINSOR_LIMIT=8.0
+
+# Scenario labels configuration
+Environment=WIN_SECS=300
+Environment=ACTIVE_TPS=2.0
+Environment=VOL_SPLIT=0.5
+Environment=WRITE_SESSION_LABELS=true
+Environment=SCENARIO_SCHEME=regime2x2
+Environment=FEE_TIER=TM
+
+# User and limits
+User=youruser
+Group=yourgroup
+LimitNOFILE=65535
+LimitNPROC=4096
+
+# Logging
+StandardOutput=append:/var/log/harvestd/stdout.log
+StandardError=append:/var/log/harvestd/stderr.log
+SyslogIdentifier=harvestd
+
+[Install]
+WantedBy=multi-user.target

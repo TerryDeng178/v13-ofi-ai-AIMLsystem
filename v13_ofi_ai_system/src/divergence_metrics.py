@@ -20,8 +20,16 @@ from prometheus_client import Counter, Gauge, Histogram, CollectorRegistry
 class DivergenceMetricsCollector:
     """背离检测指标收集器"""
     
-    def __init__(self, registry: Optional[CollectorRegistry] = None):
+    def __init__(self, registry: Optional[CollectorRegistry] = None, config_loader=None):
+        """
+        初始化背离检测指标收集器
+        
+        Args:
+            registry: Prometheus指标注册表，默认创建新注册表
+            config_loader: 配置加载器实例，用于从统一配置系统加载参数
+        """
         self.registry = registry or CollectorRegistry()
+        self.config_loader = config_loader
         self._setup_metrics()
         self._latest_events = {}  # 存储最新事件信息
     
@@ -197,6 +205,14 @@ class DivergencePrometheusExporter:
     """背离检测Prometheus导出器"""
     
     def __init__(self, port: int = 8004, env: str = "testing", config_loader=None):
+        """
+        初始化背离检测Prometheus导出器
+        
+        Args:
+            port: Prometheus指标端口，默认8004
+            env: 环境标识，默认"testing"
+            config_loader: 配置加载器实例，用于从统一配置系统加载参数
+        """
         # 从配置加载器获取端口配置
         if config_loader:
             port = config_loader.get('monitoring.divergence_metrics.port', port)
@@ -204,7 +220,9 @@ class DivergencePrometheusExporter:
         
         self.port = port
         self.env = env
-        self.metrics_collector = DivergenceMetricsCollector()
+        self.config_loader = config_loader
+        # 传递 config_loader 给指标收集器
+        self.metrics_collector = DivergenceMetricsCollector(config_loader=config_loader)
         self.detector = None
         self._running = False
         self._start_time = None

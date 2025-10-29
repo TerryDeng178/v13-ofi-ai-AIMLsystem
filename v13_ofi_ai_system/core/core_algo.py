@@ -4,8 +4,6 @@ Task 1.5 核心算法v1 - 信号层实现
 直接调用成熟组件：OFI计算器、CVD计算器、融合指标、背离检测
 """
 
-import numpy as np
-import pandas as pd
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
 from datetime import datetime
@@ -18,10 +16,6 @@ import time
 import threading
 import queue
 import atexit
-
-# 模块级logger
-logger = logging.getLogger(__name__)
-logger.propagate = True
 import sqlite3
 
 # 添加src路径以导入成熟组件
@@ -33,7 +27,8 @@ from real_cvd_calculator import RealCVDCalculator, CVDConfig
 from ofi_cvd_fusion import OFI_CVD_Fusion, OFICVDFusionConfig
 from ofi_cvd_divergence import DivergenceDetector, DivergenceConfig
 from utils.strategy_mode_manager import StrategyModeManager, StrategyMode, MarketActivity
-from utils.config_loader import load_config, get_config
+from utils.config_loader import load_config
+import argparse
 
 # ---- 可插拔 Sink 抽象 ----
 class SignalSink:
@@ -80,6 +75,7 @@ class JsonlSink(SignalSink):
         self.batch_n = batch_n
         self.fsync_ms = fsync_ms
         self.state = {}  # symbol -> {"minute", "fh", "path", "count", "last_fsync"}
+        self.dropped = 0  # 健康度上报：丢弃的消息数
         self._stop = threading.Event()
         self.t = threading.Thread(target=self._run, daemon=True)
         self.t.start()
@@ -89,7 +85,10 @@ class JsonlSink(SignalSink):
             self.q.put(entry, timeout=0.2)
         except queue.Full:
             # 按需计数告警；这里丢弃以保障交易主路径
-            pass
+            self.dropped += 1
+
+    def get_health(self):
+        return {"queue_size": self.q.qsize(), "dropped": self.dropped, "open_files": len(self.state)}
 
     def _minute_key(self, ts_ms: int) -> str:
         # 用事件时间分片（UTC）；如需本地时间可改为 .fromtimestamp(..., tz=)
@@ -119,18 +118,31 @@ class JsonlSink(SignalSink):
             pass
 
     def _run(self):
+        last_heartbeat_sec = -1
         while not self._stop.is_set():
             try:
                 entry = self.q.get(timeout=0.1)
             except queue.Empty:
                 # 周期性批量 fsync
                 now = time.time()
-                for st in list(self.state.values()):
+                current_minute = self._minute_key(int(now * 1000))
+                for sym, st in list(self.state.items()):
                     if st["fh"] and (now - st["last_fsync"]) * 1000 >= self.fsync_ms:
                         try:
                             st["fh"].flush(); os.fsync(st["fh"].fileno()); st["last_fsync"] = now
                         except Exception:
                             pass
+                    # 若已跨分钟且该分片已有内容，及时换名到 ready/
+                    if st["minute"] != current_minute and st["count"] > 0:
+                        try:
+                            self._rotate(sym, st)
+                        finally:
+                            self.state.pop(sym, None)
+                # 每分钟健康心跳（避免静默丢包难定位）
+                sec = int(now)
+                if sec % 60 == 0 and sec != last_heartbeat_sec:
+                    last_heartbeat_sec = sec
+                    print(f"[JsonlSink] qsize={self.q.qsize()} open={len(self.state)} dropped={self.dropped}")
                 continue
 
             if entry is None:
@@ -176,6 +188,7 @@ class SqliteSink(SignalSink):
         self.batch_n = batch_n
         self.flush_ms = flush_ms
         self.q = queue.Queue(maxsize=20000)
+        self.dropped = 0  # 健康度上报：丢弃的消息数
         self._stop = threading.Event()
         self.t = threading.Thread(target=self._run, daemon=True)
         self._init_db()
@@ -204,7 +217,11 @@ class SqliteSink(SignalSink):
         try:
             self.q.put(entry, timeout=0.2)
         except queue.Full:
-            pass
+            # 按需计数告警；这里丢弃以保障交易主路径
+            self.dropped += 1
+
+    def get_health(self):
+        return {"queue_size": self.q.qsize(), "dropped": self.dropped, "open_files": 0}
 
     def _run(self):
         con = sqlite3.connect(self.db_path, timeout=5.0)
@@ -248,62 +265,6 @@ class NullSink(SignalSink):
     def emit(self, entry: dict): pass
     def close(self): pass
 
-class AsyncJsonlWriter:
-    """进程内单线程写 JSONL；不同进程自动写入不同文件（_PID 后缀）"""
-    _instances = {}           # base_dir -> writer
-    _instances_lock = threading.Lock()
-
-    def __init__(self, base_dir: Path):
-        self.base_dir = Path(base_dir)
-        self.q = queue.Queue(maxsize=10000)
-        self.t = threading.Thread(target=self._run, daemon=True)
-        self.t.start()
-
-    @classmethod
-    def get(cls, base_dir: Path):
-        with cls._instances_lock:
-            key = str(Path(base_dir).resolve())
-            inst = cls._instances.get(key)
-            if inst is None:
-                inst = AsyncJsonlWriter(base_dir)
-                cls._instances[key] = inst
-            return inst
-
-    def write_line(self, rel_path: Path, payload: dict, timeout: float = 0.2):
-        line = json.dumps(payload, ensure_ascii=False) + "\n"
-        try:
-            self.q.put((rel_path, line), timeout=timeout)
-        except queue.Full:
-            # 可计数告警；为简洁这里直接丢弃
-            pass
-
-    def _run(self):
-        cur_path = None
-        f = None
-        pid = os.getpid()
-        while True:
-            rel_path, line = self.q.get()
-            if rel_path is None:
-                break
-            # 每个进程自己的文件：signals_YYYYMMDD_PID.jsonl
-            path = self.base_dir / rel_path
-            path = path.with_name(f"{path.stem}_{pid}{path.suffix}")
-            path.parent.mkdir(parents=True, exist_ok=True)
-
-            if cur_path != path:
-                if f:
-                    try: f.flush(); os.fsync(f.fileno()); f.close()
-                    except Exception: pass
-                f = open(path, "a", encoding="utf-8", buffering=1)
-                cur_path = path
-            try:
-                f.write(line)
-                f.flush()
-                os.fsync(f.fileno())
-            except Exception:
-                # 不中断主流程；可扩展成 fallback 文件
-                pass
-
 @dataclass
 class SignalConfig:
     """信号配置"""
@@ -336,8 +297,8 @@ class SignalData:
     ts_ms: int
     symbol: str
     score: float
-    z_ofi: float
-    z_cvd: float
+    z_ofi: Optional[float]
+    z_cvd: Optional[float]
     regime: str
     div_type: Optional[str] = None
     confirm: bool = False
@@ -352,20 +313,51 @@ class CoreAlgorithm:
         self.config_loader = config_loader
         self.logger = logging.getLogger(__name__)
         
-        # 加载统一配置
-        self.system_config = load_config() if config_loader is None else config_loader
+        # 调试开关 - 控制详细日志输出
+        self.debug = os.getenv("V13_DEBUG", "false").lower() == "true"
+        
+        # 加载统一配置（支持严格运行时模式）
+        if config_loader is None:
+            # 默认使用严格运行时模式
+            use_strict_mode = os.getenv('V13_STRICT_RUNTIME', 'true').lower() in ('true', '1', 'yes')
+            compat_global = os.getenv('V13_COMPAT_GLOBAL_CONFIG', 'false').lower() in ('true', '1', 'yes')
+            
+            if use_strict_mode and not compat_global:
+                # 严格模式：从运行时包加载
+                try:
+                    from v13conf.strict_mode import load_strict_runtime_config
+                    runtime_pack_path = os.getenv(
+                        'V13_CORE_ALGO_RUNTIME_PACK',
+                        str(Path(__file__).parent.parent / 'dist' / 'config' / 'core_algo.runtime.current.yaml')
+                    )
+                    self.system_config = load_strict_runtime_config(runtime_pack_path, compat_global_config=False, verify_scenarios_snapshot=True)
+                    self.logger.info(f"[严格模式] 从运行时包加载配置: {runtime_pack_path}")
+                except Exception as e:
+                    self.logger.warning(f"[配置加载] 严格模式加载失败，降级到兼容模式: {e}")
+                    self.system_config = load_config()
+            else:
+                # 兼容模式：从全局配置加载
+                self.system_config = load_config()
+        elif callable(config_loader):
+            self.system_config = config_loader()
+        else:
+            self.system_config = config_loader  # 已是 dict-like
         
         # 直接初始化成熟组件
         self._init_components()
         
-        # 状态变量
-        self.last_resync_time = 0
-        self.last_reconnect_time = 0
-        self.last_exit_time = 0
+        # 状态变量 - 使用单调时钟避免系统时间跳变
+        base = time.monotonic() - 1e9
+        self.last_resync_time = base
+        self.last_reconnect_time = base
+        self.last_exit_time = base
         
         # 护栏状态
         self.guard_active = False
         self.guard_reason = ""
+        
+        # 去重逻辑
+        self._last_signal_ts = None
         
         # 统计信息
         self.stats = {
@@ -394,10 +386,15 @@ class CoreAlgorithm:
             'weak_signal_throttle': 0,
             'low_consistency': 0,
             'reverse_cooldown': 0,
-            'insufficient_hold_time': 0
+            'insufficient_hold_time': 0,
+            'exit_cooldown': 0,
+            'passed': 0
         }
         
-        # 反向开仓防抖状态
+        
+        # default regime to ensure fusion has a value before first determination
+        self._current_regime = 'normal'
+# 反向开仓防抖状态
         self._last_trade_time = {}  # symbol -> timestamp
         self._last_trade_direction = {}  # symbol -> direction
         self._consecutive_same_direction = {}  # symbol -> count
@@ -411,103 +408,14 @@ class CoreAlgorithm:
             self._scenario_hold_times[scenario] = params.get('min_hold_time_sec', 60)
             self._scenario_consistency_thresholds[scenario] = params.get('consistency_threshold', 0.6)
         
-        # 初始化场景参数热更新支持
-        self._scenario_params = scenario_params.copy()
-        self._scenario_config_version = 'initial'
-        
-        # 新增：场景判定与统一取参
-        self._current_scenario = 'A_H'
-        self._gate_stats = {'weak': 0, 'low_consistency': 0, 'min_hold': 0}
-        self.vol_tracker = None  # 波动率跟踪器
-        
         # 初始化异步写入器（延迟初始化）
         self._async_writer = None
         self._output_dir = Path(os.getenv("V13_OUTPUT_DIR", "./runtime"))
-    
-    def update_scenario_params(self, scenario: str, params: Dict[str, Any]) -> bool:
-        """
-        热更新指定场景的参数
         
-        Args:
-            scenario: 场景名称 (A_H, A_L, Q_H, Q_L)
-            params: 新参数
-            
-        Returns:
-            bool: 是否成功
-        """
-        try:
-            # 更新场景参数
-            self._scenario_params[scenario] = params.copy()
-            
-            # 更新相关阈值
-            if 'min_hold_time_sec' in params:
-                self._scenario_hold_times[scenario] = params['min_hold_time_sec']
-            if 'consistency_threshold' in params:
-                self._scenario_consistency_thresholds[scenario] = params['consistency_threshold']
-            
-            # 更新配置版本
-            self._scenario_config_version = f"{int(time.time())}"
-            
-            logger.info(f"Updated scenario params for {scenario}: {list(params.keys())}")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Failed to update scenario params for {scenario}: {e}")
-            return False
-    
-    def determine_scenario(self, is_active: bool, realized_vol: float, vol_split: float = 0.5):
-        """
-        场景判定：Active/Quiet × 高/低波动 → 2×2 场景标签
-        
-        Args:
-            is_active: 是否活跃
-            realized_vol: 实现波动率
-            vol_split: 波动率分位点阈值
-            
-        Returns:
-            str: 场景标签 (A_H, A_L, Q_H, Q_L)
-        """
-        if self.vol_tracker is None:
-            # 初始化波动率跟踪器
-            from collections import deque
-            self.vol_tracker = deque(maxlen=100)
-        
-        self.vol_tracker.append(realized_vol)
-        if len(self.vol_tracker) < 10:
-            # 数据不足时使用默认场景
-            return 'A_H' if is_active else 'Q_L'
-        
-        # 计算波动率分位点
-        vol_percentile = sorted(self.vol_tracker)[int(len(self.vol_tracker) * vol_split)]
-        hi = realized_vol >= vol_percentile
-        
-        return ('A_' if is_active else 'Q_') + ('H' if hi else 'L')
-    
-    def set_gates(self, weak_signal_threshold: float = 0.15, consistency_min: float = 0.5, min_hold_time_sec: int = 30):
-        """
-        设置闸门参数
-        
-        Args:
-            weak_signal_threshold: 弱信号阈值
-            consistency_min: 最小一致性
-            min_hold_time_sec: 最小持仓时间
-        """
-        self._weak_signal_threshold = weak_signal_threshold
-        self._consistency_min = consistency_min
-        self._min_hold_time_sec = min_hold_time_sec
-        logger.info(f"Set gates: weak={weak_signal_threshold}, consistency={consistency_min}, hold={min_hold_time_sec}")
-    
-    def set_targets(self, tp_bps: float = 25, sl_bps: float = 12):
-        """
-        设置止盈止损目标
-        
-        Args:
-            tp_bps: 止盈基点
-            sl_bps: 止损基点
-        """
-        self._tp_bps = tp_bps
-        self._sl_bps = sl_bps
-        logger.info(f"Set targets: TP={tp_bps}bps, SL={sl_bps}bps")
+        # 初始化SafeJsonlWriter
+        self._safe_writer = SafeJsonlWriter(
+            Path(os.getenv("V13_OUTPUT_DIR", "./runtime"))
+        )
         
         # 可插拔Sink系统初始化
         base_dir = Path(os.getenv("V13_OUTPUT_DIR", "./runtime"))
@@ -523,59 +431,111 @@ class CoreAlgorithm:
         atexit.register(lambda: getattr(self, "_sink", None) and self._sink.close())
     
     def _init_components(self):
-        """初始化成熟组件 - 使用统一配置系统"""
+        """初始化成熟组件 - 使用统一配置系统（优先库式注入，向后兼容旧路径）"""
         try:
-            # 从统一配置获取参数
-            fusion_config = self.system_config.get('fusion_metrics', {})
-            divergence_config = self.system_config.get('divergence_detection', {})
-            strategy_config = self.system_config.get('strategy', {})
+            # 优先使用新的components子树（严格运行时模式）
+            components_cfg = self.system_config.get('components', {})
             
-            # 1. OFI计算器 - 使用优化后的参数
-            ofi_config = OFIConfig(
-                levels=5,
-                z_window=150,  # 使用优化后的窗口大小
-                ema_alpha=self.config.ema_alpha
-            )
-            self.ofi_calc = RealOFICalculator(self.symbol, ofi_config, self.config_loader)
+            # 检查是否有新格式的配置（库式注入）
+            has_new_format = components_cfg and any(components_cfg.values())
             
-            # 2. CVD计算器 - 使用优化后的参数
-            cvd_config = CVDConfig(
-                z_window=150,  # 使用优化后的窗口大小
-                ema_alpha=self.config.ema_alpha,
-                use_tick_rule=True,
-                warmup_min=3  # 使用优化后的暖启动阈值
-            )
-            self.cvd_calc = RealCVDCalculator(self.symbol, cvd_config, self.config_loader)
-            
-            # 3. 融合指标 - 使用统一配置
-            fusion_weights = fusion_config.get('weights', {})
-            fusion_thresholds = fusion_config.get('thresholds', {})
-            fusion_config_obj = OFICVDFusionConfig(
-                w_ofi=fusion_weights.get('w_ofi', self.config.w_ofi),
-                w_cvd=fusion_weights.get('w_cvd', self.config.w_cvd),
-                fuse_buy=fusion_thresholds.get('fuse_buy', 1.5),
-                fuse_strong_buy=fusion_thresholds.get('fuse_strong_buy', 2.5),
-                fuse_sell=fusion_thresholds.get('fuse_sell', -1.5),
-                fuse_strong_sell=fusion_thresholds.get('fuse_strong_sell', -2.5)
-            )
-            self.fusion = OFI_CVD_Fusion(fusion_config_obj, self.config_loader)
-            
-            # 4. 背离检测器 - 使用统一配置
-            divergence_default = divergence_config.get('default', {})
-            divergence_config_obj = DivergenceConfig(
-                swing_L=divergence_default.get('swing_L', self.config.swing_L),
-                z_hi=divergence_default.get('z_hi', self.config.z_hi),
-                z_mid=divergence_default.get('z_mid', self.config.z_mid),
-                min_separation=divergence_default.get('min_separation', 6),
-                cooldown_secs=divergence_default.get('cooldown_secs', 1.0)
-            )
-            self.divergence = DivergenceDetector(divergence_config_obj, self.config_loader)
-            
-            # 5. 策略模式管理器 - 使用统一配置
-            if not strategy_config:
-                # 如果没有策略配置，使用默认配置
-                strategy_config = {
-                    'strategy': {
+            if has_new_format:
+                # 新格式：使用库式配置注入
+                self.logger.info(f"[库式注入] 使用components子树初始化组件")
+                
+                # 1. OFI计算器（库式调用）
+                ofi_cfg = components_cfg.get('ofi', {})
+                self.ofi_calc = RealOFICalculator(
+                    symbol=self.symbol,
+                    runtime_cfg={'ofi': ofi_cfg}  # 库式调用
+                )
+                
+                # 2. CVD计算器（库式调用）
+                cvd_cfg = components_cfg.get('cvd', {})
+                self.cvd_calc = RealCVDCalculator(
+                    symbol=self.symbol,
+                    runtime_cfg={'cvd': cvd_cfg}  # 库式调用
+                )
+                
+                # 3. FUSION（库式调用）
+                fusion_cfg = components_cfg.get('fusion', {})
+                self.fusion = OFI_CVD_Fusion(
+                    runtime_cfg={'fusion': fusion_cfg}  # 库式调用
+                )
+                
+                # 4. DIVERGENCE（库式调用）
+                divergence_cfg = components_cfg.get('divergence', {})
+                self.divergence = DivergenceDetector(
+                    runtime_cfg={'divergence': divergence_cfg}  # 库式调用
+                )
+                
+                # 5. STRATEGY MODE（库式调用）
+                strategy_cfg = components_cfg.get('strategy', {})
+                self.strategy_manager = StrategyModeManager(
+                    runtime_cfg={'strategy': strategy_cfg}  # 库式调用
+                )
+                
+                self.logger.info(f"Core algorithm components initialized for {self.symbol} with runtime config (library-style)")
+            else:
+                # 旧格式：向后兼容逻辑（弃用警告）
+                import warnings
+                warnings.warn(
+                    "使用旧配置路径（fusion_metrics, divergence_detection）已弃用。"
+                    "请迁移到components子树格式。此路径将在下一大版本中移除。",
+                    DeprecationWarning,
+                    stacklevel=2
+                )
+                self.logger.warning("[弃用警告] 使用旧配置路径，建议迁移到components子树格式")
+                
+                fusion_config = self.system_config.get('fusion_metrics', {})
+                divergence_config = self.system_config.get('divergence_detection', {})
+                strategy_config = self.system_config.get('strategy', {})
+                
+                # 1. OFI计算器 - 使用优化后的参数
+                ofi_config = OFIConfig(
+                    levels=5,
+                    z_window=150,  # 使用优化后的窗口大小
+                    ema_alpha=self.config.ema_alpha
+                )
+                self.ofi_calc = RealOFICalculator(self.symbol, ofi_config, self.config_loader)
+                
+                # 2. CVD计算器 - 使用优化后的参数
+                cvd_config = CVDConfig(
+                    z_window=150,  # 使用优化后的窗口大小
+                    ema_alpha=self.config.ema_alpha,
+                    use_tick_rule=True,
+                    warmup_min=3  # 使用优化后的暖启动阈值
+                )
+                self.cvd_calc = RealCVDCalculator(self.symbol, cvd_config, self.config_loader)
+                
+                # 3. 融合指标 - 使用统一配置
+                fusion_weights = fusion_config.get('weights', {})
+                fusion_thresholds = fusion_config.get('thresholds', {})
+                fusion_config_obj = OFICVDFusionConfig(
+                    w_ofi=fusion_weights.get('w_ofi', self.config.w_ofi),
+                    w_cvd=fusion_weights.get('w_cvd', self.config.w_cvd),
+                    fuse_buy=fusion_thresholds.get('fuse_buy', 1.0),
+                    fuse_strong_buy=fusion_thresholds.get('fuse_strong_buy', 1.8),
+                    fuse_sell=fusion_thresholds.get('fuse_sell', -1.0),
+                    fuse_strong_sell=fusion_thresholds.get('fuse_strong_sell', -1.8)
+                )
+                self.fusion = OFI_CVD_Fusion(fusion_config_obj, self.config_loader)
+                
+                # 4. 背离检测器 - 使用统一配置
+                divergence_default = divergence_config.get('default', {})
+                divergence_config_obj = DivergenceConfig(
+                    swing_L=divergence_default.get('swing_L', self.config.swing_L),
+                    z_hi=divergence_default.get('z_hi', self.config.z_hi),
+                    z_mid=divergence_default.get('z_mid', self.config.z_mid),
+                    min_separation=divergence_default.get('min_separation', 6),
+                    cooldown_secs=divergence_default.get('cooldown_secs', 1.0)
+                )
+                self.divergence = DivergenceDetector(divergence_config_obj, self.config_loader)
+                
+                # 5. 策略模式管理器 - 统一传入带 'strategy' 根的结构
+                raw_strategy = strategy_config
+                if not raw_strategy:
+                    strategy_root = {'strategy': {
                         'mode': 'auto',
                         'hysteresis': {
                             'window_secs': 60,
@@ -585,7 +545,7 @@ class CoreAlgorithm:
                         'triggers': {
                             'schedule': {
                                 'enabled': True,
-                                'timezone': 'Asia/Hong_Kong',
+                                'timezone': 'Asia/Tokyo',
                                 'calendar': 'CRYPTO',
                                 'enabled_weekdays': ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'],
                                 'holidays': [],
@@ -604,17 +564,11 @@ class CoreAlgorithm:
                                 'winsorize_percentile': 95
                             }
                         }
-                    }
-                }
-            self.strategy_manager = StrategyModeManager(strategy_config, self.config_loader)
-            
-            # 关键：把组件引用挂载到策略管理器，让2x2场景参数能够真正下发
-            self.strategy_manager.core_algo = self
-            self.strategy_manager.ofi_calc = self.ofi_calc
-            self.strategy_manager.cvd_calc = self.cvd_calc
-            self.strategy_manager.fusion_component = self.fusion
-            
-            self.logger.info(f"Core algorithm components initialized for {self.symbol} with unified config")
+                    }}  # 默认
+                else:
+                    strategy_root = {'strategy': raw_strategy}  # 已有配置时也包一层根
+                self.strategy_manager = StrategyModeManager(strategy_root, self.config_loader)
+            self.logger.info(f"Core algorithm components initialized for {self.symbol} with unified config (legacy mode)")
             
         except Exception as e:
             self.logger.error(f"Failed to initialize components for {self.symbol}: {e}")
@@ -624,38 +578,72 @@ class CoreAlgorithm:
                    event_time_ms: Optional[int] = None) -> Dict[str, Any]:
         """更新OFI计算器"""
         try:
+            # 数据格式检查
+            if not bids or not asks:
+                self.logger.warning("OFI update: empty bids/asks data")
+                return {}
+            
+            # 检查数据格式：[(price, size)...] 的浮点数组
+            for i, (price, size) in enumerate(bids[:3]):  # 只检查前3个
+                if not isinstance(price, (int, float)) or not isinstance(size, (int, float)):
+                    self.logger.warning(f"OFI update: invalid bid format at index {i}: price={price}, size={size}")
+                    return {}
+            
+            for i, (price, size) in enumerate(asks[:3]):  # 只检查前3个
+                if not isinstance(price, (int, float)) or not isinstance(size, (int, float)):
+                    self.logger.warning(f"OFI update: invalid ask format at index {i}: price={price}, size={size}")
+                    return {}
+            
+            # 时间戳检查
+            current_time = time.time() * 1000
+            if event_time_ms is None:
+                event_time_ms = int(current_time)
+            elif abs(event_time_ms - current_time) > 5000:  # 5秒差异报警
+                self.logger.warning(f"OFI update: timestamp mismatch - event={event_time_ms}, current={current_time}")
+            
             result = self.ofi_calc.update_with_snapshot(bids, asks, event_time_ms)
             self.stats['ofi_updates'] += 1
+            
+            # 心跳检查：每分钟打印更新频率
+            current_time_sec = time.time()
+            if not hasattr(self, '_last_ofi_heartbeat'):
+                self._last_ofi_heartbeat = current_time_sec
+                self._ofi_count_since_heartbeat = 0
+            
+            self._ofi_count_since_heartbeat += 1
+            
+            # 每分钟打印一次OFI更新频率（并记录近5分钟中位数）
+            if current_time_sec - self._last_ofi_heartbeat >= 60:
+                ofi_updates_per_min = self._ofi_count_since_heartbeat
+                self._ofi_hist = getattr(self, "_ofi_hist", [])
+                self._ofi_hist.append(ofi_updates_per_min)
+                if len(self._ofi_hist) > 5: self._ofi_hist.pop(0)
+                median5 = sorted(self._ofi_hist)[len(self._ofi_hist)//2]
+                self.logger.info(f"OFI heartbeat: {ofi_updates_per_min}/min (5-min median={median5}/min)")
+                
+                # 连续低频提示（不假定目标阈值）
+                if ofi_updates_per_min == 0:
+                    self.logger.warning("OFI low frequency: 0 updates in the last minute")
+                
+                self._last_ofi_heartbeat = current_time_sec
+                self._ofi_count_since_heartbeat = 0
             
             # OFI质量诊断：检查数据质量指标
             meta = result.get('meta', {})
             bad_points = meta.get('bad_points', 0)
             std_zero = meta.get('std_zero', False)
             
-            # 检查数据质量并记录到统计
-            if bad_points > 0:
-                self.gate_reason_stats['ofi_bad_data'] = self.gate_reason_stats.get('ofi_bad_data', 0) + 1
-            
+            # 数据质量报警
+            if bad_points > 10:
+                self.logger.warning(f"OFI data quality: {bad_points} bad points detected")
             if std_zero:
-                self.gate_reason_stats['ofi_std_zero'] = self.gate_reason_stats.get('ofi_std_zero', 0) + 1
-            
-            # 记录跳价统计
-            jump_stats = {
-                'bid_jump_up': meta.get('bid_jump_up_cnt', 0),
-                'bid_jump_down': meta.get('bid_jump_down_cnt', 0),
-                'ask_jump_up': meta.get('ask_jump_up_cnt', 0),
-                'ask_jump_down': meta.get('ask_jump_down_cnt', 0)
-            }
-            
-            # 如果数据质量异常，标记为warmup
-            if bad_points > 5 or std_zero:  # 阈值可调
-                result['meta']['data_quality_issue'] = True
-                result['z_ofi'] = None  # 强制返回None，触发warmup
+                self.logger.warning("OFI data quality: std_zero detected - insufficient price variation")
             
             return result
+            
         except Exception as e:
-            self.logger.error(f"OFI calculation failed: {e}")
-            return {"z_ofi": None, "ofi": 0.0, "meta": {"warmup": True}}
+            self.logger.error(f"OFI update failed: {e}")
+            return {}
     
     def update_cvd(self, price: Optional[float] = None, qty: float = 0.0, 
                   is_buy: Optional[bool] = None, event_time_ms: Optional[int] = None) -> Dict[str, Any]:
@@ -704,22 +692,54 @@ class CoreAlgorithm:
         try:
             # 创建市场活跃度数据
             activity = MarketActivity()
+            
+            # 场景切换诊断：每30秒打印一次状态
+            current_time = time.time()
+            if not hasattr(self, '_last_regime_heartbeat'):
+                self._last_regime_heartbeat = current_time
+                self._last_regime = None
+            
+            # 每30秒打印一次场景切换状态
+            if current_time - self._last_regime_heartbeat >= 30:
+                self.logger.info(f"Scenario diagnostics: trade_rate={trade_rate:.2f}, vol={realized_vol:.4f}, spread={spread_bps:.1f}bps, volume=${volume_usd/1000:.0f}k")
+                self.logger.info(f"Strategy mode enabled: {getattr(self.strategy_manager, 'dynamic_mode_enabled', False)}")
+                self.logger.info(f"Current mode: {getattr(self.strategy_manager, 'current_mode', 'unknown')}")
+                self._last_regime_heartbeat = current_time
             activity.trades_per_min = trade_rate
             activity.quote_updates_per_sec = 100.0  # 默认值
             activity.spread_bps = spread_bps
             activity.volatility_bps = realized_vol * 10000  # 转换为bps
             activity.volume_usd = volume_usd
             
-            # 使用策略模式管理器检测市场状态
-            is_active = self.strategy_manager.check_market_active(activity)
+            # 使用策略模式管理器确定状态
+            if self.debug:
+                self.logger.debug(f"[STRATEGY_MGR] Manager initialized: {self.strategy_manager is not None}")
+                self.logger.debug(f"[STRATEGY_MGR] Dynamic mode enabled: {getattr(self.strategy_manager, 'dynamic_mode_enabled', False)}")
+                self.logger.debug(f"[STRATEGY_MGR] Activity: trades={activity.trades_per_min}, quotes={activity.quote_updates_per_sec}, vol={activity.volatility_bps}")
+            try:
+                mode, trigger_reason, trigger_snapshot = self.strategy_manager.decide_mode(activity)
+                regime = mode.value if hasattr(mode, 'value') else str(mode)
+                if self.debug:
+                    self.logger.debug(f"[STRATEGY_MGR] Mode decision: {regime}, trigger={trigger_reason}")
+            except Exception as e:
+                if self.debug:
+                    self.logger.debug(f"[STRATEGY_MGR] Manager failed: {e}, using fallback")
+                self.logger.warning(f"Strategy mode manager failed: {e}, using fallback")
+                # 默认兜底：根据市场活跃度选择normal或quiet
+                if trade_rate > 20 and realized_vol > 0.005:
+                    regime = "normal"
+                else:
+                    regime = "quiet"
+                if self.debug:
+                    self.logger.debug(f"[STRATEGY_MGR] Fallback regime: {regime}")
             
-            # 映射到我们的状态枚举
-            if is_active:
-                return "active"
-            elif trade_rate > 10 and realized_vol > 0.005:
-                return "normal"
-            else:
-                return "quiet"
+            # 检测场景切换
+            if self._last_regime is not None and self._last_regime != regime:
+                self.logger.info(f"Scenario switch: {self._last_regime} -> {regime}")
+                self.stats['regime_changes'] += 1
+            
+            self._last_regime = regime
+            return regime
                 
         except Exception as e:
             self.logger.error(f"Strategy mode manager failed: {e}")
@@ -734,7 +754,7 @@ class CoreAlgorithm:
     def check_guards(self, spread_bps: float, missing_msgs_rate: float, 
                     resync_detected: bool, reconnect_detected: bool) -> Tuple[bool, str]:
         """检查护栏条件"""
-        current_time = datetime.now().timestamp()
+        current_time = time.monotonic()
         
         # 检查价差
         if spread_bps > self.config.spread_bps_cap:
@@ -763,15 +783,17 @@ class CoreAlgorithm:
             return True, "reconnect_cooldown"
         
         if current_time - self.last_reconnect_time < self.config.reconnect_cooldown_sec:
+            self.gate_reason_stats['reconnect_cooldown'] += 1
             return True, "reconnect_cooldown"
         
         # 检查退出后冷却期
         if current_time - self.last_exit_time < self.config.cooldown_after_exit_sec:
+            self.gate_reason_stats['exit_cooldown'] += 1
             return True, "exit_cooldown"
         
         return False, ""
     
-    def check_reverse_prevention(self, symbol: str, fusion_score: float, scenario: str = None) -> Tuple[bool, str]:
+    def check_reverse_prevention(self, symbol: str, fusion_score: float, scenario: str = None, update_state: bool = False) -> Tuple[bool, str]:
         """
         检查反向开仓防抖条件
         
@@ -779,13 +801,15 @@ class CoreAlgorithm:
             symbol: 交易对符号
             fusion_score: 融合分数
             scenario: 场景标签 (A_H/A_L/Q_H/Q_L)
+            update_state: 是否更新状态（仅在确认后设为True）
             
         Returns:
             (是否被阻止, 阻止原因)
         """
-        current_time = time.time()
+        current_time = time.monotonic()
         direction = 1 if fusion_score > 0 else -1
         
+        blocked, reason = False, ""
         # 检查是否在最小持仓时间内
         if symbol in self._last_trade_time:
             time_since_last = current_time - self._last_trade_time[symbol]
@@ -793,10 +817,10 @@ class CoreAlgorithm:
             
             if time_since_last < min_hold_time:
                 self.gate_reason_stats['insufficient_hold_time'] += 1
-                return True, f"insufficient_hold_time_{min_hold_time}s"
+                blocked, reason = True, f"insufficient_hold_time_{min_hold_time}s"
         
         # 检查连续同向信号确认
-        if symbol in self._last_trade_direction:
+        if not blocked and symbol in self._last_trade_direction:
             if self._last_trade_direction[symbol] == direction:
                 # 同向信号，增加计数
                 self._consecutive_same_direction[symbol] = self._consecutive_same_direction.get(symbol, 0) + 1
@@ -804,15 +828,16 @@ class CoreAlgorithm:
                 # 反向信号，需要连续N=3个tick确认
                 if self._consecutive_same_direction.get(symbol, 0) < 3:
                     self.gate_reason_stats['reverse_cooldown'] += 1
-                    return True, "reverse_cooldown_insufficient_ticks"
-                # 重置计数
+                    blocked, reason = True, "reverse_cooldown_insufficient_ticks"
                 self._consecutive_same_direction[symbol] = 1
         
-        # 更新状态
-        self._last_trade_time[symbol] = current_time
-        self._last_trade_direction[symbol] = direction
+        # 仅在确认后提交状态
+        if update_state and not blocked:
+            self._last_trade_time[symbol] = current_time
+            self._last_trade_direction[symbol] = direction
+            self._consecutive_same_direction[symbol] = self._consecutive_same_direction.get(symbol, 0) + 1
         
-        return False, ""
+        return blocked, reason
     
     def get_gate_reason_stats(self) -> Dict[str, int]:
         """获取闸门原因统计"""
@@ -829,6 +854,7 @@ class CoreAlgorithm:
             stats_record = {
                 "timestamp": datetime.now().isoformat(),
                 "type": "gate_stats",
+                "symbol": self.symbol,
                 "total_signals": self._gate_stats_counter,
                 "gate_reasons": self.gate_reason_stats.copy(),
                 "current_regime": getattr(self, '_current_regime', 'unknown'),
@@ -844,7 +870,7 @@ class CoreAlgorithm:
                 f.write(json.dumps(stats_record, ensure_ascii=False) + '\n')
                 
         except Exception as e:
-            print(f"[WARN] 闸门统计记录失败: {e}")
+            self.logger.warning(f"闸门统计记录失败: {e}")
     
     def check_gate_reason_thresholds(self) -> List[str]:
         """
@@ -855,19 +881,23 @@ class CoreAlgorithm:
         """
         suggestions = []
         total_signals = self.stats['total_updates']
+        suppressed_signals = sum(self.gate_reason_stats.values()) - self.gate_reason_stats.get('passed', 0)
         
         if total_signals == 0:
             return suggestions
         
-        # 检查各原因占比
+        # 检查各原因占比（支持两种口径）
         for reason, count in self.gate_reason_stats.items():
-            percentage = (count / total_signals) * 100
-            if percentage > 60:  # 超过60%的信号被同一原因阻止
+            if reason == 'passed':
+                continue
+            percentage_total = (count / total_signals) * 100
+            percentage_suppressed = (count / suppressed_signals) * 100 if suppressed_signals > 0 else 0
+            if percentage_total > 60 or percentage_suppressed > 60:  # 超过60%的信号被同一原因阻止
                 if reason == 'warmup_guard':
                     suggestions.append("降低min_warmup_samples参数")
                 elif reason == 'lag_exceeded':
-                    suggestions.append("增加max_lag参数")
-                elif reason == 'consistency_low':
+                    suggestions.append("增加max_event_lag_sec参数")
+                elif reason in ('consistency_low', 'low_consistency'):
                     suggestions.append("降低min_consistency参数")
                 elif reason == 'spread_too_high':
                     suggestions.append("增加spread_bps_cap参数")
@@ -879,63 +909,135 @@ class CoreAlgorithm:
     def process_signal(self, ts_ms: int, symbol: str, z_ofi: float, z_cvd: float,
                       price: float, trade_rate: float, realized_vol: float, 
                       spread_bps: float, missing_msgs_rate: float, 
-                      resync_detected: bool = False, reconnect_detected: bool = False) -> SignalData:
+                      resync_detected: bool = False, reconnect_detected: bool = False) -> Optional[SignalData]:
         """处理信号 - 直接使用成熟组件"""
+        
+        # === P0调用链日志 ===
+        if self.debug:
+            self.logger.debug(f"[CALL_CHAIN] process_signal called - ts={ts_ms}, symbol={symbol}")
+            self.logger.debug(f"[CALL_CHAIN] OFI data: z_ofi={z_ofi}, CVD data: z_cvd={z_cvd}")
+            self.logger.debug(f"[CALL_CHAIN] Market data: price={price}, trade_rate={trade_rate}, vol={realized_vol}")
+        
+        # 去重逻辑：丢弃同时间戳/250ms内重复信号
+        if self._last_signal_ts is not None and abs(ts_ms - self._last_signal_ts) < 250:
+            if self.debug:
+                self.logger.debug(f"[CALL_CHAIN] Signal deduplicated - too close to last signal")
+            return None  # 丢弃重复信号
+        self._last_signal_ts = ts_ms
         
         self.stats['total_updates'] += 1
         ts = ts_ms / 1000.0  # 转换为秒
         
-        # 1. 确定市场状态（只计算一次，避免重复计算）
+        # 模式快照记录（每30秒）
+        if not hasattr(self, '_last_mode_snapshot'):
+            self._last_mode_snapshot = ts
+        if ts - self._last_mode_snapshot >= 30:
+            mode_snapshot = {
+                'timestamp': ts,
+                'mode': getattr(self, '_current_regime', 'unknown'),
+                'trades_per_min': trade_rate,
+                'quote_updates_per_sec': 100.0,  # 默认值
+                'spread_bps': spread_bps,
+                'volatility_bps': realized_vol * 10000,
+                'volume_usd': 0.0,  # 默认值
+                'z_ofi': z_ofi,
+                'z_cvd': z_cvd
+            }
+            if self.debug:
+                self.logger.debug(f"[MODE_SNAPSHOT] {mode_snapshot}")
+            self._last_mode_snapshot = ts
+        
+        # 1. 确定市场状态（提前确定，用于分场景阈值）
         regime = self.determine_regime(trade_rate, realized_vol, spread_bps)
         self._current_regime = regime
+        self._current_scenario = getattr(self, '_current_scenario', None) or regime
         
         # 2. 使用融合指标计算融合分数（传递regime信息）
-        fusion_result = self.update_fusion(z_ofi, z_cvd, ts, price)
-        fusion_score = fusion_result.get('fusion_score', 0.0)
-        fusion_signal = fusion_result.get('signal', 'neutral')
-        consistency = fusion_result.get('consistency', 0.0)
+        if self.debug:
+            self.logger.debug(f"[CALL_CHAIN] Calling fusion.update() - z_ofi={z_ofi}, z_cvd={z_cvd}, ts={ts}")
+        try:
+            fusion_result = self.update_fusion(z_ofi, z_cvd, ts, price)
+            fusion_score = fusion_result.get('fusion_score', 0.0)
+            fusion_signal = fusion_result.get('signal', 'neutral')
+            consistency = fusion_result.get('consistency', 0.0)
+            reason_codes = fusion_result.get('reason_codes', [])
+            if self.debug:
+                self.logger.debug(f"[CALL_CHAIN] Fusion result: score={fusion_score}, signal={fusion_signal}, consistency={consistency}")
+                self.logger.debug(f"[CALL_CHAIN] Fusion reason_codes: {reason_codes}")
+        except Exception as e:
+            if self.debug:
+                self.logger.debug(f"[CALL_CHAIN] Fusion update failed: {e}")
+                self.logger.debug(f"[CALL_CHAIN] Input snapshot: z_ofi={z_ofi}, z_cvd={z_cvd}, ts={ts}, price={price}")
+            self.logger.error(f"Fusion update failed: {e}, input: z_ofi={z_ofi}, z_cvd={z_cvd}, ts={ts}, price={price}")
+            fusion_result = {'fusion_score': 0.0, 'signal': 'neutral', 'consistency': 0.0}
+            fusion_score = 0.0
+            fusion_signal = 'neutral'
+            consistency = 0.0
+            reason_codes = []
         
-        # 3. 使用背离检测器检测背离
+        # 2. 使用背离检测器检测背离
         divergence_event = self.update_divergence(
             ts, price, z_ofi, z_cvd, fusion_score, consistency
         )
         div_type = divergence_event.get('type') if divergence_event else None
+        self._last_divergence_type = div_type  # 确保背离加成可用
+        
+        # 3. Regime 已在步骤1确定，不再重复调用
         
         # 4. 检查护栏
         guard_active, guard_reason = self.check_guards(
             spread_bps, missing_msgs_rate, resync_detected, reconnect_detected
         )
+        # 4.0 事件滞后护栏（默认阈值 3s，可放入配置）
+        event_lag_sec = max(0.0, time.time() - ts_ms/1000.0)
+        lag_cap = float(self.system_config.get('max_event_lag_sec', 3.0))
+        if not guard_active and event_lag_sec > lag_cap:
+            self.gate_reason_stats['lag_exceeded'] += 1
+            guard_active, guard_reason = True, f"lag_exceeded_{event_lag_sec:.2f}s"
         
-        # 4.1. 检查反向开仓防抖（需要场景信息）
-        scenario = getattr(self, '_current_scenario', None)
-        reverse_blocked, reverse_reason = self.check_reverse_prevention(symbol, fusion_score, scenario)
-        if reverse_blocked:
-            guard_active = True
-            guard_reason = reverse_reason
+        # 4.1. 反向防抖检查将在确认逻辑后执行
         
-        # 4.5. Warmup护栏检查
+        # 4.5. Warmup护栏检查 - 严格区分"未就绪(None)"与"就绪但弱(数值)"
         warmup_active = False
+        ofi_warmup, cvd_warmup = False, False
         if z_ofi is None or z_cvd is None:
             warmup_active = True
-            guard_reason = "warmup_guard"
-            guard_active = True
-            self.gate_reason_stats['warmup_guard'] += 1
-        
-        # 检查OFI/CVD的warmup状态
-        ofi_warmup = getattr(self.ofi_calc, '_is_warmup', False)
-        cvd_warmup = getattr(self.cvd_calc, '_is_warmup', False)
-        if ofi_warmup or cvd_warmup:
-            warmup_active = True
-            guard_reason = "component_warmup"
-            guard_active = True
-            self.gate_reason_stats['component_warmup'] += 1
+            if not guard_active:
+                guard_reason = "warmup_guard"
+                guard_active = True
+                self.gate_reason_stats['warmup_guard'] += 1
+            if self.debug:
+                self.logger.debug(f"[WARMUP_GUARD] z_ofi={z_ofi}, z_cvd={z_cvd}, guard_reason={guard_reason}")
+        else:
+            # 检查OFI/CVD的warmup状态
+            ofi_warmup = getattr(self.ofi_calc, '_is_warmup', False)
+            cvd_warmup = getattr(self.cvd_calc, '_is_warmup', False)
+            if ofi_warmup or cvd_warmup:
+                warmup_active = True
+                if not guard_active:
+                    guard_reason = "component_warmup"
+                    guard_active = True
+                    self.gate_reason_stats['component_warmup'] += 1
+                if self.debug:
+                    self.logger.debug(f"[COMPONENT_WARMUP] ofi_warmup={ofi_warmup}, cvd_warmup={cvd_warmup}, guard_reason={guard_reason}")
         
         # 5. 确认信号 - 质量优化版（分场景自适应阈值）
         # 从配置获取分场景阈值
         current_regime = getattr(self, '_current_regime', 'normal')
         
-        # 获取融合阈值配置
-        fusion_config = getattr(self.config_loader, 'fusion_metrics', {})
+        # === 融合→闸门关键字段日志 ===
+        if self.debug:
+            self.logger.debug(f"[FUSION_GATE] Input: z_ofi={z_ofi}, z_cvd={z_cvd}, fusion_score={fusion_score}, consistency={consistency}")
+            self.logger.debug(f"[FUSION_GATE] Guard status: guard_active={guard_active}, guard_reason={guard_reason}")
+            self.logger.debug(f"[FUSION_GATE] Warmup status: warmup_active={warmup_active}, ofi_warmup={ofi_warmup}, cvd_warmup={cvd_warmup}")
+            self.logger.debug(f"[FUSION_GATE] Current regime: {current_regime}")
+        
+        # 注意：各分支已经分别计数，这里不再重复累加，避免双计数
+        if self.debug and guard_reason:
+            self.logger.debug(f"[GATE_STATS] latest_guard={guard_reason}, snapshot={self.gate_reason_stats.get(guard_reason,0)}")
+        
+        # 获取融合阈值配置（使用统一配置快照）
+        fusion_config = self.system_config.get('fusion_metrics', {})
         thresholds = fusion_config.get('thresholds', {})
         regime_thresholds = thresholds.get('regime_thresholds', {})
         
@@ -943,12 +1045,12 @@ class CoreAlgorithm:
         regime_config = regime_thresholds.get(current_regime, {})
         if regime_config:
             # 使用分场景阈值
-            fuse_buy = regime_config.get('fuse_buy', thresholds.get('fuse_buy', 1.2))
-            fuse_sell = regime_config.get('fuse_sell', thresholds.get('fuse_sell', -1.2))
+            fuse_buy = regime_config.get('fuse_buy', thresholds.get('fuse_buy', 1.0))
+            fuse_sell = regime_config.get('fuse_sell', thresholds.get('fuse_sell', -1.0))
         else:
             # 使用基础阈值
-            fuse_buy = thresholds.get('fuse_buy', 1.2)
-            fuse_sell = thresholds.get('fuse_sell', -1.2)
+            fuse_buy = thresholds.get('fuse_buy', 1.0)
+            fuse_sell = thresholds.get('fuse_sell', -1.0)
         
         # 根据信号方向选择阈值
         if fusion_score > 0:
@@ -960,36 +1062,48 @@ class CoreAlgorithm:
         if hasattr(self, '_last_divergence_type') and self._last_divergence_type in ("bull_div", "bear_div", "hidden_bull", "hidden_bear"):
             threshold *= 0.8  # 背离加成：门槛再降20%
         
-        # 场景判定与统一取参
-        is_active = getattr(self, '_is_active', True)  # 从策略管理器获取
-        realized_vol = getattr(self, '_realized_vol', 0.01)  # 从市场数据获取
-        self._current_scenario = self.determine_scenario(is_active, realized_vol)
+        # 弱信号节流：只对就绪信号进行节流，未就绪(None)直接跳过
+        weak_signal_threshold = float(fusion_config.get('weak_signal_threshold', 0.2))
+        scenario = getattr(self, '_current_scenario', None) or current_regime
+        consistency_params = fusion_config.get('consistency', {})
+        consistency_threshold = self._scenario_consistency_thresholds.get(
+            scenario, consistency_params.get('min_consistency', 0.15)
+        )
         
-        # 关键：让融合器读取到当前场景，让分场景一致性阈值真正生效
-        if hasattr(self.fusion, '_current_regime'):
-            self.fusion._current_regime = self._current_scenario
+        # 检查弱信号节流 - 只对就绪信号进行节流
+        if z_ofi is not None and z_cvd is not None:  # 只对就绪信号进行节流
+            if abs(fusion_score) < weak_signal_threshold:
+                # 弱信号直接丢弃
+                self.gate_reason_stats['weak_signal_throttle'] = self.gate_reason_stats.get('weak_signal_throttle', 0) + 1
+                guard_active = True
+                guard_reason = "weak_signal_throttle"
+                if self.debug:
+                    self.logger.debug(f"[WEAK_SIGNAL_THROTTLE] fusion_score={fusion_score:.6f}, threshold={weak_signal_threshold}, z_ofi={z_ofi}, z_cvd={z_cvd}")
+            elif consistency < consistency_threshold:
+                # 一致性不足
+                self.gate_reason_stats['low_consistency'] = self.gate_reason_stats.get('low_consistency', 0) + 1
+                guard_active = True
+                guard_reason = "low_consistency"
+                if self.debug:
+                    self.logger.debug(f"[LOW_CONSISTENCY] consistency={consistency:.3f}, threshold={consistency_threshold:.3f}")
+        else:
+            # 未就绪信号，不进行弱信号节流
+            if self.debug:
+                self.logger.debug(f"[SKIP_WEAK_SIGNAL_THROTTLE] z_ofi={z_ofi}, z_cvd={z_cvd}, not ready for throttling")
         
-        # 从当前场景获取参数
-        scenario_params = self._scenario_params.get(self._current_scenario, {})
-        weak_signal_threshold = getattr(self, '_weak_signal_threshold', 0.15)
-        consistency_threshold = getattr(self, '_consistency_min', scenario_params.get('consistency_min', 0.5))
-        
-        # 检查弱信号节流
-        if abs(fusion_score) < weak_signal_threshold:
-            # 弱信号直接丢弃
-            self._gate_stats['weak'] += 1
-            self.gate_reason_stats['weak_signal_throttle'] = self.gate_reason_stats.get('weak_signal_throttle', 0) + 1
-            guard_active = True
-            guard_reason = "weak_signal_throttle"
-        elif consistency < consistency_threshold:
-            # 一致性不足
-            self._gate_stats['low_consistency'] += 1
-            self.gate_reason_stats['low_consistency'] = self.gate_reason_stats.get('low_consistency', 0) + 1
-            guard_active = True
-            guard_reason = "low_consistency"
-        
-        confirm = (abs(fusion_score) >= threshold and
-                  not guard_active and not warmup_active)
+        candidate_confirm = (abs(fusion_score) >= threshold and not warmup_active and not guard_active)
+        # 候选通过后再做反向防抖（仅判断不落库）
+        scenario = getattr(self, '_current_scenario', None) or getattr(self, '_current_regime', 'normal')
+        if candidate_confirm:
+            reverse_blocked, reverse_reason = self.check_reverse_prevention(symbol, fusion_score, scenario, update_state=False)
+            if reverse_blocked:
+                guard_active = True
+                guard_reason = reverse_reason
+        confirm = candidate_confirm and not guard_active
+        # 最终确认后才提交防抖状态
+        if confirm:
+            self.check_reverse_prevention(symbol, fusion_score, scenario, update_state=True)
+            self.gate_reason_stats['passed'] += 1
         
         # 更新护栏状态
         self.guard_active = guard_active
@@ -1080,12 +1194,14 @@ class CoreAlgorithm:
 
         # 允许函数参数临时覆盖输出目录
         base_dir = Path(output_dir) if output_dir else Path(os.getenv("V13_OUTPUT_DIR", "./runtime"))
-        rel_path = Path("signal") / signal_data.symbol / f"signals_{datetime.now().strftime('%Y%m%d')}.jsonl"
+        rel_path = Path("ready") / "signal" / signal_data.symbol / f"signals_{datetime.now().strftime('%Y%m%d_%H%M')}.jsonl"
 
         try:
-            # 优先使用实例级 writer；若被覆盖目录则临时写入
-            writer = self._safe_writer if base_dir == self._safe_writer.base_dir else SafeJsonlWriter(base_dir)
-            writer.write_line(rel_path, log_entry)
+            if hasattr(self, "_sink") and not isinstance(self._sink, NullSink):
+                self._sink.emit(log_entry)
+            else:
+                writer = self._safe_writer if base_dir == self._safe_writer.base_dir else SafeJsonlWriter(base_dir)
+                writer.write_line(rel_path, log_entry)
             self.logger.info(
                 f"Signal logged: {signal_data.symbol} score={signal_data.score:.3f} "
                 f"regime={signal_data.regime} confirm={signal_data.confirm} gating={signal_data.gating}"
@@ -1096,7 +1212,18 @@ class CoreAlgorithm:
 
 def main():
     """测试主函数 - 直接调用成熟组件"""
+    parser = argparse.ArgumentParser(description='核心算法组件')
+    parser.add_argument('--compat-global-config', action='store_true',
+                       help='启用兼容模式：从全局配置目录加载，而非运行时包（临时过渡选项）')
+    args = parser.parse_args()
+    
+    if args.compat_global_config:
+        os.environ['V13_COMPAT_GLOBAL_CONFIG'] = 'true'
+        os.environ['V13_STRICT_RUNTIME'] = 'false'
+    
     print("=== 核心算法v1 - 直接调用成熟组件测试 ===")
+    if args.compat_global_config:
+        print("[兼容模式] 使用全局配置目录（临时过渡选项）")
     
     # 初始化核心算法
     symbol = "BTCUSDT"

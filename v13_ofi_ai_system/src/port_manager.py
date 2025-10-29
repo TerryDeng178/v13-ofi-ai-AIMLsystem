@@ -28,9 +28,17 @@ class PortConfig:
 class PortManager:
     """端口管理器"""
     
-    def __init__(self):
+    def __init__(self, config_loader=None):
+        """
+        初始化端口管理器
+        
+        Args:
+            config_loader: 统一配置加载器实例，用于加载端口配置
+        """
+        self.config_loader = config_loader
         self.ports: Dict[str, PortConfig] = {}
         self._load_default_ports()
+        self._load_from_config()
     
     def _load_default_ports(self):
         """加载默认端口配置"""
@@ -62,6 +70,43 @@ class PortManager:
         for port_config in default_ports:
             self.ports[port_config.name] = port_config
     
+    def _load_from_config(self):
+        """从配置加载器加载端口配置"""
+        if not self.config_loader:
+            return
+        
+        try:
+            # 从配置中获取端口配置 (monitoring.prometheus.port 等)
+            ports_config = self.config_loader.get("monitoring.prometheus", {})
+            if isinstance(ports_config, dict) and "port" in ports_config:
+                port = ports_config["port"]
+                if "prometheus" in self.ports:
+                    self.ports["prometheus"].port = int(port)
+            
+            # divergence_metrics, fusion_metrics 等
+            div_metrics = self.config_loader.get("monitoring.divergence_metrics", {})
+            if isinstance(div_metrics, dict) and "port" in div_metrics:
+                if "divergence_metrics" in self.ports:
+                    self.ports["divergence_metrics"].port = int(div_metrics["port"])
+            
+            fusion_metrics = self.config_loader.get("monitoring.fusion_metrics", {})
+            if isinstance(fusion_metrics, dict) and "port" in fusion_metrics:
+                if "fusion_metrics" in self.ports:
+                    self.ports["fusion_metrics"].port = int(fusion_metrics["port"])
+            
+            strategy_metrics = self.config_loader.get("strategy_mode.monitoring.prometheus", {})
+            if isinstance(strategy_metrics, dict) and "port" in strategy_metrics:
+                if "strategy_metrics" in self.ports:
+                    self.ports["strategy_metrics"].port = int(strategy_metrics["port"])
+            
+            trade_stream = self.config_loader.get("trade_stream.monitoring.prometheus", {})
+            if isinstance(trade_stream, dict) and "port" in trade_stream:
+                if "trade_stream" in self.ports:
+                    self.ports["trade_stream"].port = int(trade_stream["port"])
+        
+        except Exception as e:
+            logger.warning(f"Failed to load ports from config: {e}, using defaults")
+    
     def get_port(self, name: str) -> int:
         """获取指定组件的端口"""
         if name not in self.ports:
@@ -69,15 +114,35 @@ class PortManager:
         
         port_config = self.ports[name]
         
-        # 检查环境变量覆盖
-        env_var = f"V13_PORT_{name.upper()}"
-        if env_var in os.environ:
+        # 优先从配置加载器获取环境变量覆盖（V13__PORT_*）
+        # 配置加载器已经处理了 V13__ 前缀的环境变量，我们可以直接查配置
+        if self.config_loader:
             try:
-                port = int(os.environ[env_var])
+                # 尝试从配置中获取端口（配置加载器已将 V13__PORT_* 映射到配置中）
+                env_port = self.config_loader.get(f"ports.{name}", None)
+                if env_port is not None:
+                    port = int(env_port)
+                    logger.info(f"Port {name} overridden by config: {port}")
+                    return port
+            except Exception:
+                pass
+        
+        # 向后兼容：如果没有配置加载器或配置中没有，尝试直接读取环境变量（已废弃）
+        env_var = f"V13_PORT_{name.upper()}"
+        env_port_val = os.environ.get(env_var)
+        if env_port_val:
+            try:
+                import warnings
+                warnings.warn(
+                    f"Direct environment variable {env_var} is deprecated. "
+                    f"Please use config system or V13__PORT_{name.upper()} environment variable.",
+                    DeprecationWarning
+                )
+                port = int(env_port_val)
                 logger.info(f"Port {name} overridden by environment variable {env_var}={port}")
                 return port
             except ValueError:
-                logger.warning(f"Invalid port value in {env_var}: {os.environ[env_var]}")
+                logger.warning(f"Invalid port value in {env_var}: {env_port_val}")
         
         return port_config.port
     
@@ -181,8 +246,17 @@ class PortManager:
         
         print("=" * 80)
 
-# 全局端口管理器实例
-port_manager = PortManager()
+# 全局端口管理器实例（延迟初始化，支持配置加载器）
+_port_manager_instance: Optional[PortManager] = None
+
+def get_port_manager(config_loader=None) -> PortManager:
+    """获取全局端口管理器实例，支持配置加载器注入"""
+    global _port_manager_instance
+    if _port_manager_instance is None:
+        _port_manager_instance = PortManager(config_loader=config_loader)
+    return _port_manager_instance
+
+port_manager = get_port_manager()  # 默认实例（向后兼容）
 
 def get_port(name: str) -> int:
     """获取端口号的便捷函数"""

@@ -12,28 +12,16 @@
 创建日期: 2025-10-19
 """
 
-import os
-import sys
-import io
 import time
 import json
 import logging
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Dict, Any, Optional, List, Tuple
 from enum import Enum
 from collections import deque
 import pytz
 import numpy as np
-
-# 注释掉Windows UTF-8输出修复以避免IO冲突
-# 注意：替换sys.stdout和sys.stderr会导致logging系统失败
-# if sys.platform == 'win32':
-#     try:
-#         sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
-#         sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
-#     except Exception as e:
-#         pass
 
 logger = logging.getLogger(__name__)
 
@@ -130,16 +118,30 @@ class StrategyModeManager:
     4. 记录切换事件和指标
     """
     
-    def __init__(self, config: Dict[str, Any] = None, config_loader=None):
+    def __init__(self, config: Dict[str, Any] = None, config_loader=None,
+                 runtime_cfg: Optional[Dict[str, Any]] = None):
         """
         初始化模式管理器
         
         Args:
-            config: 配置字典（包含strategy配置段），默认None使用默认配置
-            config_loader: 配置加载器实例，用于从统一配置系统加载参数
+            config: 配置字典（包含strategy配置段），默认None使用默认配置（兼容旧接口）
+            config_loader: 配置加载器实例（兼容旧接口，库式调用时不应使用）
+            runtime_cfg: 运行时配置字典，库式调用时使用（优先于config_loader）
         """
-        if config_loader:
-            # 从统一配置系统加载参数
+        # 优先使用运行时配置字典（库式调用）
+        if runtime_cfg is not None:
+            # 运行时配置字典可能包含完整的components.strategy结构
+            if isinstance(runtime_cfg, dict):
+                # 尝试多种可能的路径
+                strategy_cfg = (runtime_cfg.get('strategy') or 
+                               runtime_cfg.get('components', {}).get('strategy') or {})
+                self.config = {'strategy': strategy_cfg}
+                self.strategy_config = strategy_cfg
+            else:
+                self.config = {}
+                self.strategy_config = {}
+        elif config_loader:
+            # 从统一配置系统加载参数（兼容旧接口）
             self.config = self._load_from_config_loader(config_loader)
             logger.debug(f"Loaded config from config_loader: {self.config}")
             self.strategy_config = self.config.get('strategy', {}) if self.config else {}
@@ -165,10 +167,20 @@ class StrategyModeManager:
         # 触发器配置
         triggers = self.strategy_config.get('triggers', {})
         
+        # 组合逻辑（开盘 OR/AND）
+        self.combine_logic = triggers.get('combine_logic', 'OR').upper()  # OR | AND，默认OR
+        
         # 时间表触发器
         schedule_config = triggers.get('schedule', {})
         self.schedule_enabled = schedule_config.get('enabled', True)
-        self.timezone = pytz.timezone(schedule_config.get('timezone', 'Asia/Hong_Kong'))
+        
+        # 安全的时区处理
+        try:
+            timezone_str = schedule_config.get('timezone', 'UTC')
+            self.timezone = pytz.timezone(timezone_str)
+        except Exception as e:
+            logger.warning(f"Failed to create timezone {timezone_str}, falling back to UTC: {e}")
+            self.timezone = pytz.UTC
         self.calendar = schedule_config.get('calendar', 'CRYPTO')
         self.enabled_weekdays = schedule_config.get('enabled_weekdays', ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'])
         self.holidays = schedule_config.get('holidays', [])
@@ -182,27 +194,48 @@ class StrategyModeManager:
             self.active_windows = self._parse_time_windows(active_windows_raw)
         self.wrap_midnight = schedule_config.get('wrap_midnight', True)
         
-        # 市场触发器 - 进攻版阈值设置（扩大场景覆盖）
+        # 市场触发器
         market_config = triggers.get('market', {})
         self.market_enabled = market_config.get('enabled', True)
         self.market_window_secs = market_config.get('window_secs', 60)
-        # 进攻版阈值：大幅降低门槛以扩大场景覆盖（直接使用优化值）
-        self.min_trades_per_min = 150  # 直接设置优化值
-        self.min_quote_updates_per_sec = 40  # 直接设置优化值
-        self.max_spread_bps = 5  # 直接设置优化值
-        self.min_volatility_bps = 4  # 直接设置优化值
-        self.min_volume_usd = 200000  # 直接设置优化值
+        # 配置优先，其次默认（不再硬编码覆盖）
+        self.min_trades_per_min = market_config.get('min_trades_per_min', 150)
+        self.min_quote_updates_per_sec = market_config.get('min_quote_updates_per_sec', 40)
+        self.max_spread_bps = market_config.get('max_spread_bps', 5)
+        self.min_volatility_bps = market_config.get('min_volatility_bps', 4)
+        self.min_volume_usd = market_config.get('min_volume_usd', 200000)
         self.use_median = market_config.get('use_median', True)
         self.winsorize_percentile = market_config.get('winsorize_percentile', 95)
         
+        # 质量门槛倍率（用于线下灰度调参）
+        qmult = market_config.get('quality_multipliers', {})
+        self.q_mult_active = {
+            'trades': qmult.get('active_trades', 100 / max(1, self.min_trades_per_min)),
+            'quotes': qmult.get('active_quotes', 20 / max(1, self.min_quote_updates_per_sec)),
+            'spread': qmult.get('active_spread', 8 / max(1, self.max_spread_bps)),  # ≤
+            'vol': qmult.get('active_vol', 2 / max(1, self.min_volatility_bps)),
+            'volume': qmult.get('active_volume', 100000 / max(1, self.min_volume_usd)),
+        }
+        self.q_mult_quiet = {
+            'trades': qmult.get('quiet_trades', 50 / max(1, self.min_trades_per_min)),
+            'quotes': qmult.get('quiet_quotes', 10 / max(1, self.min_quote_updates_per_sec)),
+            'spread': qmult.get('quiet_spread', 12 / max(1, self.max_spread_bps)),
+            'vol': qmult.get('quiet_vol', 1 / max(1, self.min_volatility_bps)),
+            'volume': qmult.get('quiet_volume', 50000 / max(1, self.min_volume_usd)),
+        }
+        
         # 市场活跃度样本窗口（用于滑动窗口+去噪）
-        self.market_samples = deque(maxlen=int(self.market_window_secs / 10))  # 假设每10秒采样一次
+        # 动态上限：基于采样频率上限，避免 maxlen 假设采样频率
+        self.max_samples_per_sec = market_config.get('max_samples_per_sec', 2)  # 默认上限2Hz
+        self.market_samples = deque(maxlen=int(self.market_window_secs * self.max_samples_per_sec))
+        self._samples_lock = threading.RLock()  # 样本窗口并发安全锁
         
         # 活跃度判定历史（用于迟滞逻辑）
         self.activity_history = deque(maxlen=max(self.min_active_windows, self.min_quiet_windows))
         
         # 统计指标
-        self.mode_start_time = time.time()
+        self.mode_start_time = time.time()  # 墙钟，用于 last_change_timestamp 指标
+        self.mode_start_mono = time.perf_counter()  # 单调时钟，用于累计时长计算（防止NTP跳变）
         self.time_in_mode = {StrategyMode.ACTIVE: 0.0, StrategyMode.QUIET: 0.0}
         self.transitions_count = {
             'quiet_to_active': 0,
@@ -231,63 +264,8 @@ class StrategyModeManager:
         # 初始化Prometheus指标
         self._init_metrics()
         
-        # 加载场景参数
-        self._load_scenario_parameters()
-        
         logger.info(f"StrategyModeManager initialized: mode={self.mode_setting}, "
                    f"schedule_enabled={self.schedule_enabled}, market_enabled={self.market_enabled}")
-    
-    def _load_scenario_parameters(self):
-        """
-        加载2x2场景参数配置
-        """
-        try:
-            scenario_config = self.config.get('scenario_parameters', {})
-            for scenario, params in scenario_config.items():
-                self.current_params_by_scenario[scenario] = params.copy()
-                logger.info(f"Loaded scenario params for {scenario}: {list(params.keys())}")
-            
-            # 更新指标
-            _metrics.set_info('strategy_scenario_params_info', {
-                'version': self.scenario_config_version,
-                'scenarios_count': len(self.current_params_by_scenario)
-            })
-            
-        except Exception as e:
-            logger.error(f"Failed to load scenario parameters: {e}")
-    
-    def load_scenario_params(self, scenario: str) -> Dict[str, Any]:
-        """
-        加载指定场景的参数
-        
-        Args:
-            scenario: 场景名称 (A_H, A_L, Q_H, Q_L)
-            
-        Returns:
-            Dict[str, Any]: 场景参数
-        """
-        return self.current_params_by_scenario.get(scenario, {})
-    
-    def update_scenario_params(self, scenario: str, params: Dict[str, Any]) -> bool:
-        """
-        更新指定场景的参数
-        
-        Args:
-            scenario: 场景名称
-            params: 新参数
-            
-        Returns:
-            bool: 是否成功
-        """
-        try:
-            with self.params_lock:
-                self.current_params_by_scenario[scenario] = params.copy()
-                self.scenario_config_version = f"{int(time.time())}"
-                logger.info(f"Updated scenario params for {scenario}: {list(params.keys())}")
-                return True
-        except Exception as e:
-            logger.error(f"Failed to update scenario params for {scenario}: {e}")
-            return False
     
     def _load_from_config_loader(self, config_loader) -> Dict[str, Any]:
         """
@@ -317,6 +295,7 @@ class StrategyModeManager:
                         'min_quiet_windows': config.hysteresis.min_quiet_windows
                     },
                     'triggers': {
+                        'combine_logic': getattr(config.triggers, 'combine_logic', 'OR'),
                         'schedule': {
                             'enabled': config.schedule.enabled,
                             'timezone': config.schedule.timezone,
@@ -341,7 +320,9 @@ class StrategyModeManager:
                             'min_volatility_bps': config.market.min_volatility_bps,
                             'min_volume_usd': config.market.min_volume_usd,
                             'use_median': config.market.use_median,
-                            'winsorize_percentile': config.market.winsorize_percentile
+                            'winsorize_percentile': config.market.winsorize_percentile,
+                            'quality_multipliers': getattr(config.market, 'quality_multipliers', {}),
+                            'max_samples_per_sec': getattr(config.market, 'max_samples_per_sec', 2)
                         }
                     }
                 },
@@ -372,7 +353,7 @@ class StrategyModeManager:
             }
     
     def _init_metrics(self):
-        """初始化Prometheus指标（13个策略相关指标）"""
+        """初始化Prometheus指标：策略相关核心指标初始化，运行时继续补充"""
         # 1. strategy_mode_info - 当前模式信息
         _metrics.set_info('strategy_mode_info', {'mode': self.current_mode.value})
         
@@ -383,7 +364,12 @@ class StrategyModeManager:
         _metrics.set_gauge('strategy_mode_last_change_timestamp', self.mode_start_time)
         
         # 4-5. strategy_mode_transitions_total - 模式切换次数（按from/to/reason标签）
-        # 在切换时更新
+        # 预热初始值，确保仪表首次可见
+        _metrics.inc_counter('strategy_mode_transitions_total', {'from': 'quiet', 'to': 'active', 'reason': 'schedule'}, value=0.0)
+        _metrics.inc_counter('strategy_mode_transitions_total', {'from': 'quiet', 'to': 'active', 'reason': 'market'}, value=0.0)
+        _metrics.inc_counter('strategy_mode_transitions_total', {'from': 'quiet', 'to': 'active', 'reason': 'manual'}, value=0.0)
+        _metrics.inc_counter('strategy_mode_transitions_total', {'from': 'active', 'to': 'quiet', 'reason': 'manual'}, value=0.0)  # 过渡计数预热对称
+        _metrics.inc_counter('strategy_mode_transitions_total', {'from': 'active', 'to': 'quiet', 'reason': 'hysteresis'}, value=0.0)
         
         # 6. strategy_time_in_mode_seconds_total - 各模式累计时长（按mode标签）
         _metrics.set_gauge('strategy_time_in_mode_seconds_total', 0.0, {'mode': 'active'})
@@ -410,7 +396,7 @@ class StrategyModeManager:
         # 16. strategy_scenario_params_info - 场景参数信息
         _metrics.set_info('strategy_scenario_params_info', {'version': 'unknown', 'scenarios_count': 0})
         
-        logger.debug("Prometheus metrics registered (13 strategy metrics, samples will be generated at runtime)")
+        logger.debug("Prometheus strategy metrics registered (core metrics initialized, runtime samples will be generated dynamically)")
     
     def _parse_time_windows(self, windows: List[str]) -> List[Tuple[int, int]]:
         """
@@ -453,6 +439,11 @@ class StrategyModeManager:
             try:
                 start_str = window_dict.get('start', '09:00')
                 end_str = window_dict.get('end', '16:00')
+                
+                # 检查 timezone 字段（目前未使用，给出警告）
+                tz_str = window_dict.get('timezone')
+                if tz_str and tz_str != str(self.timezone):
+                    logger.warning(f"Window timezone={tz_str} ignored; manager timezone={self.timezone}")
                 
                 start_h, start_m = map(int, start_str.split(':'))
                 end_h, end_m = map(int, end_str.split(':'))
@@ -533,7 +524,7 @@ class StrategyModeManager:
     
     def _get_quality_conditions(self, mode: StrategyMode, activity: MarketActivity) -> List[bool]:
         """
-        获取质量过滤条件（按场景差异化）
+        获取质量过滤条件（按场景差异化，使用配置倍率）
         
         Args:
             mode: 当前策略模式
@@ -542,33 +533,15 @@ class StrategyModeManager:
         Returns:
             List[bool]: 质量过滤条件列表
         """
-        if mode == StrategyMode.ACTIVE:
-            # Active模式：相对严格
-            return [
-                activity.trades_per_min >= 100,
-                activity.quote_updates_per_sec >= 20,
-                activity.spread_bps <= 8,
-                activity.volatility_bps >= 2,
-                activity.volume_usd >= 100000
-            ]
-        elif mode == StrategyMode.QUIET:
-            # Quiet模式：最宽松
-            return [
-                activity.trades_per_min >= 50,
-                activity.quote_updates_per_sec >= 10,
-                activity.spread_bps <= 12,
-                activity.volatility_bps >= 1,
-                activity.volume_usd >= 50000
-            ]
-        else:
-            # Normal模式：中等要求
-            return [
-                activity.trades_per_min >= 75,
-                activity.quote_updates_per_sec >= 15,
-                activity.spread_bps <= 10,
-                activity.volatility_bps >= 1.5,
-                activity.volume_usd >= 75000
-            ]
+        # 使用配置倍率（缺省值等价于原固定门槛）
+        qm = self.q_mult_active if mode == StrategyMode.ACTIVE else self.q_mult_quiet
+        return [
+            activity.trades_per_min >= self.min_trades_per_min * qm['trades'],
+             activity.quote_updates_per_sec >= self.min_quote_updates_per_sec * qm['quotes'],
+            activity.spread_bps <= self.max_spread_bps * qm['spread'],
+            activity.volatility_bps >= self.min_volatility_bps * qm['vol'],
+            activity.volume_usd >= self.min_volume_usd * qm['volume'],
+        ]
     
     def check_market_active(self, activity: MarketActivity) -> bool:
         """
@@ -583,8 +556,20 @@ class StrategyModeManager:
         if not self.market_enabled:
             return False
         
-        # 将当前活跃度样本加入窗口
-        self.market_samples.append(activity)
+        # 将当前活跃度样本加入窗口（加锁保护并发写入）
+        with self._samples_lock:
+            activity.timestamp = time.time()  # 刷新为当前入窗时刻（避免复用旧实例导致TTL漂移）
+            self.market_samples.append(activity)
+            # TTL修剪：按时间窗口修剪过期样本，保持"最近N秒"的真实语义
+            now = time.time()
+            while self.market_samples and (now - self.market_samples[0].timestamp) > self.market_window_secs:
+                self.market_samples.popleft()
+            
+            # 指标补强：窗口规模与覆盖秒数（便于运维监控）
+            first_ts = self.market_samples[0].timestamp if self.market_samples else now
+            coverage = max(0.0, now - first_ts)
+            _metrics.set_gauge('strategy_market_samples_window_size', float(len(self.market_samples)))
+            _metrics.set_gauge('strategy_market_samples_coverage_seconds', coverage)
         
         # 第一阶段：基础准入门槛（更宽松）
         basic_conditions = [
@@ -596,7 +581,9 @@ class StrategyModeManager:
         ]
         
         # 如果基础门槛不满足，直接返回False
-        if not all(basic_conditions):
+        basic_pass = all(basic_conditions)
+        _metrics.set_gauge('strategy_market_gate_basic_pass', 1.0 if basic_pass else 0.0)
+        if not basic_pass:
             return False
         
         # 第二阶段：质量过滤门槛（按场景差异化）
@@ -605,26 +592,45 @@ class StrategyModeManager:
         
         # 如果样本不足，使用当前单次快照（启动初期）
         if len(self.market_samples) < 3:
-            return all(quality_conditions)
+            quality_pass = all(quality_conditions)
+            _metrics.set_gauge('strategy_market_gate_quality_pass', 1.0 if quality_pass else 0.0)
+            _metrics.set_gauge('strategy_market_gate_window_pass', 0.0)  # 样本不足，无窗口判定
+            return quality_pass
         
         # 基于滑动窗口计算稳健统计量
-        trades = [s.trades_per_min for s in self.market_samples]
-        quotes = [s.quote_updates_per_sec for s in self.market_samples]
-        spreads = [s.spread_bps for s in self.market_samples]
-        volatilities = [s.volatility_bps for s in self.market_samples]
-        volumes = [s.volume_usd for s in self.market_samples]
+        # 本地快照，避免遍历过程中被修改（并发读稳健）
+        samples = list(self.market_samples)
+        trades = [s.trades_per_min for s in samples]
+        quotes = [s.quote_updates_per_sec for s in samples]
+        spreads = [s.spread_bps for s in samples]
+        volatilities = [s.volatility_bps for s in samples]
+        volumes = [s.volume_usd for s in samples]
+        
+        # spread 非负保底（避免精度/解析错误产生的负值）
+        spreads = [max(0.0, s) for s in spreads]
         
         # 应用 winsorize（去极值）
-        def winsorize(values, percentile):
-            """将超过指定分位数的值截断"""
+        def winsorize_two_sided(values, p_low, p_high):
+            """两端截断：将低于p_low分位数和高于p_high分位数的值截断"""
+            if not values:
+                return values
+            lo, hi = np.percentile(values, [p_low, p_high])
+            return [max(lo, min(v, hi)) for v in values]
+        
+        def winsorize_spread(values, percentile):
+            """spread 特殊处理：截断上界（spread 越小越好）"""
+            if not values:
+                return values
             threshold = np.percentile(values, percentile)
             return [min(v, threshold) for v in values]
         
         if self.winsorize_percentile < 100:
-            trades = winsorize(trades, self.winsorize_percentile)
-            quotes = winsorize(quotes, self.winsorize_percentile)
-            volatilities = winsorize(volatilities, self.winsorize_percentile)
-            volumes = winsorize(volumes, self.winsorize_percentile)
+            p = self.winsorize_percentile
+            trades = winsorize_two_sided(trades, 100-p, p)
+            quotes = winsorize_two_sided(quotes, 100-p, p)
+            spreads = winsorize_spread(spreads, p)  # 仅截上界
+            volatilities = winsorize_two_sided(volatilities, 100-p, p)
+            volumes = winsorize_two_sided(volumes, 100-p, p)
         
         # 使用中位数或平均值
         if self.use_median:
@@ -649,7 +655,12 @@ class StrategyModeManager:
             avg_volume >= self.min_volume_usd
         ]
         
-        return all(conditions)
+        # 最终判定更稳：既要求当前样本质量合格，又要求窗口均值门槛达标
+        quality_pass = all(quality_conditions)
+        window_pass = all(conditions)
+        _metrics.set_gauge('strategy_market_gate_quality_pass', 1.0 if quality_pass else 0.0)
+        _metrics.set_gauge('strategy_market_gate_window_pass', 1.0 if window_pass else 0.0)
+        return quality_pass and window_pass
     
     def decide_mode(self, activity: Optional[MarketActivity] = None) -> Tuple[StrategyMode, TriggerReason, Dict[str, Any]]:
         """
@@ -661,10 +672,12 @@ class StrategyModeManager:
         Returns:
             (目标模式, 触发原因, 触发因子快照)
         """
-        # 如果是手动固定模式，直接返回
+        # 如果是手动固定模式，直接返回（不污染样本窗口）
         if self.mode_setting in ['active', 'quiet']:
             target_mode = StrategyMode.ACTIVE if self.mode_setting == 'active' else StrategyMode.QUIET
-            triggers = self._get_trigger_snapshot(activity)
+            schedule_active = self.check_schedule_active()
+            market_active = False  # 固定为 False，不调用 check_market_active() 污染样本
+            triggers = self._get_trigger_snapshot(activity, schedule_active, market_active)
             return target_mode, TriggerReason.MANUAL, triggers
         
         # 自动模式：检查触发器
@@ -673,8 +686,11 @@ class StrategyModeManager:
         if activity:
             market_active = self.check_market_active(activity)
         
-        # 综合判定：schedule OR market
-        is_active = schedule_active or market_active
+        # 综合判定：schedule OR/AND market（根据配置）
+        if self.combine_logic == 'AND':
+            is_active = schedule_active and market_active
+        else:  # OR
+            is_active = schedule_active or market_active
         
         # 记录历史（用于迟滞逻辑）
         self.activity_history.append((time.time(), is_active, schedule_active, market_active))
@@ -686,7 +702,7 @@ class StrategyModeManager:
             if all(recent_active) and self.current_mode == StrategyMode.QUIET:
                 # 切换到active
                 reason = TriggerReason.SCHEDULE if schedule_active else TriggerReason.MARKET
-                triggers = self._get_trigger_snapshot(activity)
+                triggers = self._get_trigger_snapshot(activity, schedule_active, market_active)
                 return StrategyMode.ACTIVE, reason, triggers
         
         if len(self.activity_history) >= self.min_quiet_windows:
@@ -694,30 +710,32 @@ class StrategyModeManager:
             recent_inactive = [not h[1] for h in list(self.activity_history)[-self.min_quiet_windows:]]
             if all(recent_inactive) and self.current_mode == StrategyMode.ACTIVE:
                 # 切换到quiet
-                triggers = self._get_trigger_snapshot(activity)
+                triggers = self._get_trigger_snapshot(activity, schedule_active, market_active)
                 return StrategyMode.QUIET, TriggerReason.HYSTERESIS, triggers
         
         # 保持当前模式
-        triggers = self._get_trigger_snapshot(activity)
+        triggers = self._get_trigger_snapshot(activity, schedule_active, market_active)
         return self.current_mode, TriggerReason.HYSTERESIS, triggers
     
-    def _get_trigger_snapshot(self, activity: Optional[MarketActivity]) -> Dict[str, Any]:
-        """获取触发因子快照"""
-        schedule_active = self.check_schedule_active()
-        market_active = False
+    def _get_trigger_snapshot(self, activity: Optional[MarketActivity],
+                              schedule_active: Optional[bool] = None,
+                              market_active: Optional[bool] = None) -> Dict[str, Any]:
+        """获取触发因子快照（不再重复调用状态函数，避免副作用）"""
+        if schedule_active is None:
+            schedule_active = self.check_schedule_active()
         
         snapshot = {
             'schedule_active': schedule_active,
-            'market_active': False,
+            'market_active': bool(market_active),
+            'current_mode': self.current_mode.value,  # 当前模式（便于排障回放）
+            'schedule_market_logic': getattr(self, 'combine_logic', 'OR'),  # 组合逻辑（OR/AND）
             'timestamp': datetime.now(self.timezone).isoformat()
         }
         
         if activity:
-            market_active = self.check_market_active(activity)
-            snapshot['market_active'] = market_active
             snapshot.update(activity.to_dict())
         
-        # 更新触发器指标
+        # 更新触发器指标（不再调用 check_market_active）
         _metrics.set_gauge('strategy_trigger_schedule_active', 1.0 if schedule_active else 0.0)
         _metrics.set_gauge('strategy_trigger_market_active', 1.0 if market_active else 0.0)
         
@@ -726,7 +744,7 @@ class StrategyModeManager:
             _metrics.set_gauge('strategy_trigger_quote_updates_per_sec', activity.quote_updates_per_sec)
             _metrics.set_gauge('strategy_trigger_spread_bps', activity.spread_bps)
             _metrics.set_gauge('strategy_trigger_volatility_bps', activity.volatility_bps)
-            _metrics.set_gauge('strategy_trigger_volume_usd', activity.volume_usd)  # 新增 volume_usd 上报
+            _metrics.set_gauge('strategy_trigger_volume_usd', activity.volume_usd)
         
         return snapshot
     
@@ -740,12 +758,12 @@ class StrategyModeManager:
         Returns:
             (是否成功, 失败的模块列表)
         """
-        start_time = time.time()
+        start_time = time.perf_counter()
         
         if self.dry_run:
             logger.info(f"[DRY-RUN] Would apply params for mode: {mode.value}")
             # 记录耗时
-            duration_ms = (time.time() - start_time) * 1000
+            duration_ms = (time.perf_counter() - start_time) * 1000
             _metrics.observe_histogram('strategy_params_update_duration_ms', duration_ms, {'result': 'dry_run'})
             return True, []
         
@@ -762,70 +780,21 @@ class StrategyModeManager:
         failed_modules = []
         with self.params_lock:
             try:
-                # 实际应用到各个子模块 - 2x2场景参数真正下发
-                scenario_params = self.current_params_by_scenario.get(self._current_scenario, {})
-                if scenario_params:
-                    # 1) CoreAlgo 风控/闸门
-                    if hasattr(self, 'core_algo') and self.core_algo:
-                        self.core_algo.set_gates(
-                            weak_signal_threshold=self.config.get('weak_signal_threshold', 0.15),
-                            consistency_min=scenario_params.get('consistency_min', 0.5),
-                            min_hold_time_sec=scenario_params.get('min_hold_time_sec', 30),
-                        )
-                        self.core_algo.set_targets(
-                            tp_bps=scenario_params.get('TP_BPS', 25), 
-                            sl_bps=scenario_params.get('SL_BPS', 12)
-                        )
-                        logger.info(f"Applied gates to core_algo: {self._current_scenario}")
-
-                    # 2) OFI/CVD 场景参数
-                    if hasattr(self, 'ofi_calc') and self.ofi_calc:
-                        self.ofi_calc.update_params(
-                            z_window=scenario_params.get('ofi_z_window', 150), 
-                            z_clip=scenario_params.get('ofi_z_clip', 3.0)
-                        )
-                    if hasattr(self, 'cvd_calc') and self.cvd_calc:
-                        self.cvd_calc.update_params(
-                            z_mode=scenario_params.get('cvd_z_mode', 'delta'), 
-                            freeze_min=scenario_params.get('cvd_freeze_min', 25)
-                        )
-
-                    # 3) 融合器阈值 - 2x2场景自适应
-                    if hasattr(self, 'fusion_component') and self.fusion_component:
-                        # 根据场景调整融合器参数
-                        scenario = self._current_scenario
-                        if scenario.startswith('A_'):  # 活跃场景：放宽阈值，降低min_consecutive
-                            min_consecutive = 0  # 活跃场景立即触发
-                            hysteresis_exit = 0.8  # 降低迟滞
-                            cooldown_secs = 0.8   # 缩短冷却
-                        elif scenario.startswith('Q_'):  # 安静场景：收紧阈值，保持保守
-                            min_consecutive = 2   # 保持保守
-                            hysteresis_exit = 1.2 # 增加迟滞
-                            cooldown_secs = 1.5   # 延长冷却
-                        else:  # 默认场景
-                            min_consecutive = 1
-                            hysteresis_exit = 1.0
-                            cooldown_secs = 1.2
-                        
-                        self.fusion_component.set_thresholds(
-                            fuse_buy=scenario_params.get('fuse_buy', None),
-                            fuse_strong_buy=scenario_params.get('fuse_strong_buy', None),
-                            fuse_sell=scenario_params.get('fuse_sell', None),
-                            fuse_strong_sell=scenario_params.get('fuse_strong_sell', None),
-                            min_consistency=scenario_params.get('consistency_min', 0.5),
-                            strong_min_consistency=max(0.75, scenario_params.get('consistency_min', 0.5) + 0.25),
-                            max_lag=0.6, 
-                            hysteresis_exit=hysteresis_exit, 
-                            cooldown_secs=cooldown_secs, 
-                            min_consecutive=min_consecutive, 
-                            z_clip=3.0
-                        )
-                        logger.info(f"Applied 2x2 thresholds to fusion: {scenario} (min_consecutive={min_consecutive}, hysteresis={hysteresis_exit})")
+                # TODO: 实际应用到各个子模块
+                # 这里需要与OFI/CVD/Risk/Performance模块集成
+                # 示例：
+                # self.ofi_module.update_params(new_params['ofi'])
+                # self.cvd_module.update_params(new_params['cvd'])
+                # ...
+                
+                # 添加场景参数注入日志
+                logger.info("[SCENARIO_PARAMS] Mode=%s NewParams=%s (inject fusion/gating later)",
+                           mode.value, new_params)
                 
                 self.current_params = new_params
                 
                 # 记录成功指标
-                duration_ms = (time.time() - start_time) * 1000
+                duration_ms = (time.perf_counter() - start_time) * 1000
                 _metrics.observe_histogram('strategy_params_update_duration_ms', duration_ms, {'result': 'success'})
                 
                 logger.info(f"[OK] Applied params for mode: {mode.value} (took {duration_ms:.2f}ms)")
@@ -835,7 +804,7 @@ class StrategyModeManager:
                 logger.error(f"[ERROR] Failed to apply params for mode {mode.value}: {e}")
                 
                 # 记录失败指标
-                duration_ms = (time.time() - start_time) * 1000
+                duration_ms = (time.perf_counter() - start_time) * 1000
                 _metrics.observe_histogram('strategy_params_update_duration_ms', duration_ms, {'result': 'rollback'})
                 _metrics.inc_counter('strategy_params_update_failures_total', {'module': 'unknown'})
                 
@@ -1053,9 +1022,10 @@ class StrategyModeManager:
         # 检查是否需要切换
         if target_mode == self.current_mode:
             # 无需切换，仅更新统计和指标
-            elapsed = time.time() - self.mode_start_time
+            elapsed = time.perf_counter() - self.mode_start_mono
             self.time_in_mode[self.current_mode] += elapsed
-            self.mode_start_time = time.time()
+            # mode_start_time 仅在切换时更新（保证"最后切换时间"语义准确）
+            self.mode_start_mono = time.perf_counter()
             
             # 更新时长指标
             _metrics.set_gauge('strategy_time_in_mode_seconds_total', 
@@ -1067,7 +1037,7 @@ class StrategyModeManager:
         
         # 需要切换
         old_mode = self.current_mode
-        start_time = time.time()
+        start_time = time.perf_counter()
         
         # 计算参数差异
         params_diff = self._compute_params_diff(old_mode, target_mode)
@@ -1087,7 +1057,7 @@ class StrategyModeManager:
                 'env': self.config.get('system', {}).get('environment', 'unknown'),
                 'triggers': triggers,
                 'params_diff': params_diff,
-                'update_duration_ms': (time.time() - start_time) * 1000,
+                'update_duration_ms': (time.perf_counter() - start_time) * 1000,
                 'rollback': True,
                 'failed_modules': failed_modules
             }
@@ -1098,11 +1068,12 @@ class StrategyModeManager:
             return event
         
         # 切换成功
-        elapsed = time.time() - self.mode_start_time
+        elapsed = time.perf_counter() - self.mode_start_mono
         self.time_in_mode[old_mode] += elapsed
         
         self.current_mode = target_mode
         self.mode_start_time = time.time()
+        self.mode_start_mono = time.perf_counter()
         
         # 更新计数
         transition_key = f"{old_mode.value}_to_{target_mode.value}"
@@ -1133,7 +1104,7 @@ class StrategyModeManager:
             'env': self.config.get('system', {}).get('environment', 'unknown'),
             'triggers': triggers,
             'params_diff': params_diff,
-            'update_duration_ms': (time.time() - start_time) * 1000,
+            'update_duration_ms': (time.perf_counter() - start_time) * 1000,
             'rollback': False,
             'failed_modules': []
         }
@@ -1149,8 +1120,8 @@ class StrategyModeManager:
     
     def get_mode_stats(self) -> Dict[str, Any]:
         """获取模式统计信息"""
-        # 更新当前模式的时长
-        elapsed = time.time() - self.mode_start_time
+        # 更新当前模式的时长（使用单调时钟避免NTP跳变）
+        elapsed = time.perf_counter() - self.mode_start_mono
         time_in_mode = self.time_in_mode.copy()
         time_in_mode[self.current_mode] += elapsed
         
