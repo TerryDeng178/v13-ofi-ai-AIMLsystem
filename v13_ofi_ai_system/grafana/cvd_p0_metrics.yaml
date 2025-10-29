@@ -1,0 +1,124 @@
+# CVD P0修复后Prometheus指标定义
+# 用于Grafana监控面板
+
+# Z-score分布指标
+cvd_z_tail_p2:
+  help: "CVD Z-score P(|Z|>2) 比例"
+  type: gauge
+  labels: ["symbol", "regime"]
+
+cvd_z_tail_p3:
+  help: "CVD Z-score P(|Z|>3) 比例"
+  type: gauge
+  labels: ["symbol", "regime"]
+
+cvd_z_median:
+  help: "CVD Z-score中位数"
+  type: gauge
+  labels: ["symbol", "regime"]
+
+cvd_z_p95:
+  help: "CVD Z-score 95分位数"
+  type: gauge
+  labels: ["symbol", "regime"]
+
+# Scale稳定性指标
+cvd_scale_median:
+  help: "CVD Scale中位数"
+  type: gauge
+  labels: ["symbol", "regime"]
+
+cvd_sigma_floor_median:
+  help: "CVD Sigma地板中位数"
+  type: gauge
+  labels: ["symbol", "regime"]
+
+cvd_floor_hit_rate:
+  help: "CVD Floor命中率"
+  type: gauge
+  labels: ["symbol", "regime"]
+
+# 活动度与时间窗口指标
+cvd_current_tps:
+  help: "CVD当前TPS"
+  type: gauge
+  labels: ["symbol"]
+
+cvd_recv_rate_median:
+  help: "CVD接收率中位数"
+  type: gauge
+  labels: ["symbol", "regime"]
+
+cvd_window_span_sec:
+  help: "CVD时间窗口跨度(秒)"
+  type: gauge
+  labels: ["symbol"]
+
+# EWMA混合权重指标
+cvd_w_fast_eff_median:
+  help: "CVD有效快速权重中位数"
+  type: gauge
+  labels: ["symbol", "regime"]
+
+cvd_w_slow_eff_median:
+  help: "CVD有效慢速权重中位数"
+  type: gauge
+  labels: ["symbol", "regime"]
+
+cvd_ewma_mix_median:
+  help: "CVD EWMA混合值中位数"
+  type: gauge
+  labels: ["symbol", "regime"]
+
+# 活动度自适应指标
+cvd_boost_median:
+  help: "CVD Boost系数中位数"
+  type: gauge
+  labels: ["symbol", "regime"]
+
+cvd_ewma_fast_median:
+  help: "CVD快速EWMA中位数"
+  type: gauge
+  labels: ["symbol", "regime"]
+
+cvd_ewma_slow_median:
+  help: "CVD慢速EWMA中位数"
+  type: gauge
+  labels: ["symbol", "regime"]
+
+# 网络延迟指标
+cvd_latency_p50:
+  help: "CVD延迟P50(ms)"
+  type: gauge
+  labels: ["symbol"]
+
+cvd_latency_p90:
+  help: "CVD延迟P90(ms)"
+  type: gauge
+  labels: ["symbol"]
+
+cvd_latency_p99:
+  help: "CVD延迟P99(ms)"
+  type: gauge
+  labels: ["symbol"]
+
+# 系统健康指标
+cvd_resyncs_total:
+  help: "CVD重连次数"
+  type: counter
+  labels: ["symbol"]
+
+cvd_bad_points_total:
+  help: "CVD坏数据点计数"
+  type: counter
+  labels: ["symbol"]
+
+cvd_warmup_samples:
+  help: "CVD暖启动样本数"
+  type: gauge
+  labels: ["symbol"]
+
+cvd_freeze_samples:
+  help: "CVD冻结样本数"
+  type: gauge
+  labels: ["symbol"]

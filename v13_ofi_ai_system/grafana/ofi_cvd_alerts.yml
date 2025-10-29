@@ -1,0 +1,83 @@
+# OFI+CVD数据采集告警规则
+
+groups:
+  - name: ofi_cvd_harvest_alerts
+    rules:
+      # 延迟告警
+      - alert: HighLatency
+        expr: histogram_quantile(0.99, rate(latency_ms_bucket[5m])) > 120
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "延迟过高"
+          description: "{{ $labels.symbol }} 延迟P99超过120ms，当前值: {{ $value }}ms"
+      
+      - alert: VeryHighLatency
+        expr: histogram_quantile(0.99, rate(latency_ms_bucket[5m])) > 300
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "延迟严重过高"
+          description: "{{ $labels.symbol }} 延迟P99超过300ms，当前值: {{ $value }}ms"
+      
+      # WebSocket重连告警
+      - alert: FrequentReconnects
+        expr: rate(ws_reconnects_total[1h]) > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "WebSocket重连频繁"
+          description: "{{ $labels.symbol }} 1小时内重连次数超过10次，当前值: {{ $value }}"
+      
+      # CVD Floor命中率告警
+      - alert: HighFloorHitRate
+        expr: cvd_floor_hit_rate > 0.6
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "CVD Floor命中率过高"
+          description: "{{ $labels.symbol }} Floor命中率超过60%，当前值: {{ $value | humanizePercentage }}"
+      
+      # 数据写入错误告警
+      - alert: WriteErrors
+        expr: rate(write_errors_total[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "数据写入错误"
+          description: "{{ $labels.kind }} 数据写入错误率过高，当前值: {{ $value }}"
+      
+      # 接收速率过低告警
+      - alert: LowReceiveRate
+        expr: recv_rate_tps < 0.1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "接收速率过低"
+          description: "{{ $labels.symbol }} 接收速率过低，当前值: {{ $value }} tps"
+      
+      # 去重率过高告警
+      - alert: HighDuplicateRate
+        expr: rate(dedup_hits_total[5m]) / rate(data_rows_total[5m]) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "去重率过高"
+          description: "{{ $labels.symbol }} 去重率过高，当前值: {{ $value | humanizePercentage }}"
+      
+      # 服务不可用告警
+      - alert: ServiceDown
+        expr: up{job="ofi-cvd-harvest"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "OFI+CVD采集服务不可用"
+          description: "OFI+CVD数据采集服务已停止运行"

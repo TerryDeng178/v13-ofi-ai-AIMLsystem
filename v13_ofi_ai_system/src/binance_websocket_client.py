@@ -25,10 +25,13 @@ except Exception:
 
 # Async logging helper
 try:
-    from utils.async_logging import setup_async_logging, sample_queue_metrics  # project path
+    from .utils.async_logging import setup_async_logging, sample_queue_metrics  # relative import
 except Exception:
-    # fallback to flat file in PYTHONPATH
-    from async_logging import setup_async_logging, sample_queue_metrics  # type: ignore
+    try:
+        from utils.async_logging import setup_async_logging, sample_queue_metrics  # project path
+    except Exception:
+        # fallback to flat file in PYTHONPATH
+        from async_logging import setup_async_logging, sample_queue_metrics  # type: ignore
 
 # ---------------------------- Helpers ----------------------------
 
@@ -71,13 +74,44 @@ class BinanceOrderBookStream:
                  max_bytes: int = 5_000_000,
                  backups: int = 7,
                  print_interval: int = 10,
-                 base_dir: Path | None = None):
+                 base_dir: Path | None = None,
+                 config_loader=None):
         self.symbol = symbol.lower()
-        self.depth_levels = depth_levels
-        self.print_interval = max(5, int(print_interval))
+        
+        # 配置加载逻辑（保持向后兼容）
+        if config_loader:
+            # 从统一配置系统加载参数
+            self._load_from_config_loader(config_loader, symbol)
+        else:
+            # 使用传入的参数（向后兼容）
+            self.depth_levels = depth_levels
+            self.print_interval = max(5, int(print_interval))
+            self.ws_url = f"wss://fstream.binancefuture.com/stream?streams={self.symbol}@depth@100ms"
+            self.rest_snap_url = f"https://fapi.binance.com/fapi/v1/depth?symbol={self.symbol.upper()}&limit=1000"
+            # 设置默认配置
+            self.rotate = rotate
+            self.rotate_sec = rotate_sec
+            self.max_bytes = max_bytes
+            self.backups = backups
+            self.timeout = 30
+            self.reconnect_interval = 5
+            self.max_reconnect_attempts = 0
+            self.ping_interval = 20
+            self.heartbeat_timeout = 60
+            self.max_backoff_interval = 30
+            self.buffer_size = 1000
+            self.backpressure_threshold = 0.8
+            self.log_level = "INFO"
+            self.enable_ndjson = True
+            self.stats_interval = 60
+            self.enable_metrics = True
+            self.enable_latency_stats = True
+            self.data_dir_name = "data/order_book"
+            self.log_dir_name = "logs"
+            self.enable_compression = True
+            self.compression_format = "gzip"
+        
         self.ws: Optional[websocket.WebSocketApp] = None
-        self.ws_url = f"wss://fstream.binancefuture.com/stream?streams={self.symbol}@depth@100ms"
-        self.rest_snap_url = f"https://fapi.binance.com/fapi/v1/depth?symbol={self.symbol.upper()}&limit=1000"
 
         # Paths
         self.base_dir = base_dir or Path.cwd() / "v13_ofi_ai_system"
@@ -404,6 +438,90 @@ class BinanceOrderBookStream:
             except Exception:
                 pass
             self.logger.info("Listener stopped; exiting run()")
+    
+    def _load_from_config_loader(self, config_loader, symbol: str):
+        """
+        从统一配置系统加载WebSocket参数
+        
+        Args:
+            config_loader: 统一配置加载器实例
+            symbol: 交易对符号
+        """
+        try:
+            # 导入WebSocket配置模块
+            from .websocket_config import WebSocketConfigLoader
+            
+            # 创建WebSocket配置加载器
+            ws_config_loader = WebSocketConfigLoader(config_loader)
+            config = ws_config_loader.load_config(symbol)
+            
+            # 设置基础参数
+            self.depth_levels = config.depth_levels
+            self.print_interval = max(5, int(config.stats_interval))
+            self.ws_url = ws_config_loader.get_ws_url(symbol)
+            self.rest_snap_url = ws_config_loader.get_rest_snap_url(symbol)
+            
+            # 设置连接参数
+            self.timeout = config.timeout
+            self.reconnect_interval = config.reconnect_interval
+            self.max_reconnect_attempts = config.max_reconnect_attempts
+            self.ping_interval = config.ping_interval
+            self.heartbeat_timeout = config.heartbeat_timeout
+            self.max_backoff_interval = config.max_backoff_interval
+            
+            # 设置数据流参数
+            self.buffer_size = config.buffer_size
+            self.backpressure_threshold = config.backpressure_threshold
+            
+            # 设置日志参数
+            self.rotate = "interval"  # 默认使用时间间隔轮转
+            self.rotate_sec = config.rotate_interval
+            self.max_bytes = config.max_file_size
+            self.backups = config.backup_count
+            self.log_level = config.log_level
+            self.enable_ndjson = config.enable_ndjson
+            
+            # 设置性能监控参数
+            self.stats_interval = config.stats_interval
+            self.enable_metrics = config.enable_metrics
+            self.enable_latency_stats = config.enable_latency_stats
+            
+            # 设置存储参数
+            self.data_dir_name = config.data_dir
+            self.log_dir_name = config.log_dir
+            self.enable_compression = config.enable_compression
+            self.compression_format = config.compression_format
+            
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(f"Failed to load WebSocket config from config_loader: {e}. Using default config.")
+            # 回退到默认配置
+            self.depth_levels = 5
+            self.print_interval = 10
+            self.ws_url = f"wss://fstream.binancefuture.com/stream?streams={self.symbol}@depth@100ms"
+            self.rest_snap_url = f"https://fapi.binance.com/fapi/v1/depth?symbol={self.symbol.upper()}&limit=1000"
+            self.rotate = "interval"
+            self.rotate_sec = 60
+            self.max_bytes = 5000000
+            self.backups = 7
+            self.timeout = 30
+            self.reconnect_interval = 5
+            self.max_reconnect_attempts = 0
+            self.ping_interval = 20
+            self.heartbeat_timeout = 60
+            self.max_backoff_interval = 30
+            self.buffer_size = 1000
+            self.backpressure_threshold = 0.8
+            self.log_level = "INFO"
+            self.enable_ndjson = True
+            self.stats_interval = 60
+            self.enable_metrics = True
+            self.enable_latency_stats = True
+            self.data_dir_name = "data/order_book"
+            self.log_dir_name = "logs"
+            self.enable_compression = True
+            self.compression_format = "gzip"
 
 # ---------------------------- CLI ----------------------------
 

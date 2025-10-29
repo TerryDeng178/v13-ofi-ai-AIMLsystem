@@ -1,0 +1,16 @@
+# 本地覆盖配置示例
+# 复制此文件为 overrides.local.yaml 并修改（该文件会被 .gitignore 忽略）
+# 用于本地开发时的临时配置覆盖
+
+# 示例：覆盖Fusion阈值
+# components:
+#   fusion:
+#     thresholds:
+#       fuse_buy: 0.95
+#       fuse_strong_buy: 1.8
+
+# 示例：临时启用调试日志
+# logging:
+#   level: 'DEBUG'
+#   debug: true
+

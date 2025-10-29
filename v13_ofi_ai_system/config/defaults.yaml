@@ -1,0 +1,169 @@
+# V13 OFI+CVD系统 - 统一配置默认值（生产就绪版本）
+# 基于最优配置报告（🌸OPTIMAL_CONFIGURATION_REPORT.md）
+# 所有参数均为经过测试验证的生产就绪值
+# 版本: v1.0-production-ready
+
+components:
+  # === OFI计算器配置 ===
+  # 注意：实际运行时会被 config/locked_ofi_params.yaml 覆盖
+  # 这里提供基础默认值作为参考
+  ofi:
+    z_window: 80
+    ema_alpha: 0.30
+    z_clip: 3.0
+    reset_on_gap_ms: 2000
+    reset_on_session_change: true
+    per_symbol_window: true
+    levels: 5
+    weights: null
+
+  # === CVD计算器配置 ===
+  cvd:
+    z_mode: "delta"
+    z_window: 150
+    half_life_trades: 300
+    winsor_limit: 2.0
+    freeze_min: 20
+    stale_threshold_ms: 5000
+    soft_freeze_ms: 4000
+    hard_freeze_ms: 5000
+    scale_mode: "hybrid"
+    ewma_fast_hl: 80
+    mad_window_trades: 200
+    mad_scale_factor: 1.4826
+    scale_fast_weight: 0.30
+    scale_slow_weight: 0.70
+    mad_multiplier: 1.70
+    post_stale_freeze: 2
+    ema_alpha: 0.2
+    use_tick_rule: true
+    warmup_min: 3
+    # 分品种覆盖（可选）
+    symbol_overrides:
+      BTCUSDT:
+        winsor_limit: 1.9
+        mad_multiplier: 1.75
+      ETHUSDT:
+        winsor_limit: 2.3
+        mad_multiplier: 1.70
+
+  # === 背离检测配置 ===
+  divergence:
+    min_strength: 0.90
+    min_separation_secs: 120
+    count_conflict_only_when_fusion_ge: 1.0
+    lookback_periods: 20
+    swing_L: 12
+    ema_k: 5
+    z_hi: 1.5
+    z_mid: 0.7
+    min_separation: 6
+    cooldown_secs: 1.0
+    warmup_min: 100
+    max_lag: 0.300
+    use_fusion: true
+    cons_min: 0.3
+
+  # === 核心算法配置 ===
+  core_algo:
+    guards:
+      spread_bps_cap: 50
+      max_missing_msgs_rate: 0.01
+      max_event_lag_sec: 3.0
+      exit_cooldown_sec: 30
+      reconnect_cooldown_sec: 60
+      resync_cooldown_sec: 120
+      reverse_prevention_sec: 300
+      warmup_period_sec: 300
+    output:
+      sinks:
+        - type: 'jsonl'
+          enabled: true
+          rotation_minutes: 1
+          fsync_ms: 1000
+        - type: 'sqlite'
+          enabled: false
+        - type: 'null'
+          enabled: false
+      weak_signal_threshold: 0.2
+
+  # === Harvester数据采集器配置 ===
+  harvester:
+    symbols: [BTCUSDT, ETHUSDT, BNBUSDT, SOLUSDT, XRPUSDT, DOGEUSDT]
+    paths:
+      output_dir: ./data/ofi_cvd
+      preview_dir: ./preview/ofi_cvd
+      artifacts_dir: ./artifacts
+    buffers:
+      high:
+        prices: 20000
+        orderbook: 12000
+        ofi: 8000
+        cvd: 8000
+        fusion: 5000
+        events: 5000
+        features: 8000
+      emergency:
+        prices: 40000
+        orderbook: 24000
+        ofi: 16000
+        cvd: 16000
+        fusion: 10000
+        events: 10000
+        features: 16000
+    files:
+      max_rows_per_file: 50000
+      parquet_rotate_sec: 60
+    concurrency:
+      save_concurrency: 2
+    timeouts:
+      stream_idle_sec: 120
+      trade_timeout: 150
+      orderbook_timeout: 180
+      health_check_interval: 25
+      backoff_reset_secs: 300
+    health:
+      data_timeout: 300
+      max_connection_errors: 10
+    thresholds:
+      extreme_traffic_threshold: 30000
+      extreme_rotate_sec: 30
+      ofi_max_lag_ms: 800
+    dedup:
+      lru_size: 32768
+      queue_drop_threshold: 1000
+    scenario:
+      win_secs: 300
+      active_tps: 0.1
+      vol_split: 0.5
+      fee_tier: TM
+    tuning:
+      orderbook_buf_len: 1024
+      features_lookback_secs: 60
+
+# === 全局配置 ===
+logging:
+  level: 'INFO'
+  debug: false
+  heartbeat_interval_sec: 60
+
+# === 数据源配置（统一默认值） ===
+data_source:
+  provider: "binance"
+  default_symbol: "ETHUSDT"
+  symbols: ["ETHUSDT", "BTCUSDT"]
+  websocket:
+    connection:
+      base_url: "wss://fstream.binance.com/"
+      timeout: 30
+      reconnect_interval: 5
+      max_reconnect_attempts: 0
+      ping_interval: 20
+      heartbeat_timeout: 60
+      backoff_max: 30
+      close_timeout: 5
+
+performance:
+  max_queue_size: 10000
+  batch_size: 100
+  flush_interval_ms: 1000

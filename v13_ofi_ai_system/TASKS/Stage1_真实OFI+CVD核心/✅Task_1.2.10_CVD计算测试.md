@@ -35,7 +35,7 @@
 - [x] 使用 `binance_trade_stream.py` 作为实时采集入口
 - [x] 运行CVD实时计算 ≥120分钟（Gold级别）
 - [x] 收集CVD数据到Parquet格式
-- [x] 使用 `analysis.py` 分析CVD分布和统计特性
+- [x] 使用 `analysis_cvd_v2_cvdonly.py` 分析CVD分布和统计特性
 - [x] 生成4张标准图表（`figs_cvd/`目录）
 - [x] 验证CVD一致性（抽样1%）
 - [x] 生成完整测试报告 `CVD_TEST_REPORT.md`

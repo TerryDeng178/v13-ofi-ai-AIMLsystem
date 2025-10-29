@@ -1,0 +1,223 @@
+# CVD Phase A1 优化监控指标定义
+# 用于Prometheus和Grafana监控
+# 版本: v13.0-a1-optimized
+# 创建日期: 2025-10-21
+
+# ============================================================================
+# 核心Z-score指标
+# ============================================================================
+cvd_z_tail_p2:
+  type: "gauge"
+  help: "CVD Z-score P(|Z|>2) 比例"
+  labels: ["symbol", "regime"]
+  thresholds:
+    warning: 5.0
+    critical: 8.0
+
+cvd_z_tail_p3:
+  type: "gauge"
+  help: "CVD Z-score P(|Z|>3) 比例"
+  labels: ["symbol", "regime"]
+  thresholds:
+    warning: 1.0
+    critical: 2.5
+
+cvd_z_p95:
+  type: "gauge"
+  help: "CVD Z-score P95值"
+  labels: ["symbol", "regime"]
+
+cvd_z_median:
+  type: "gauge"
+  help: "CVD Z-score 中位数"
+  labels: ["symbol", "regime"]
+
+# ============================================================================
+# Regime分布指标
+# ============================================================================
+cvd_active_samples:
+  type: "gauge"
+  help: "Active regime 样本数量"
+  labels: ["symbol"]
+
+cvd_quiet_samples:
+  type: "gauge"
+  help: "Quiet regime 样本数量"
+  labels: ["symbol"]
+
+cvd_regime_threshold:
+  type: "gauge"
+  help: "动态阈值 (tps)"
+  labels: ["symbol"]
+
+# ============================================================================
+# 尺度诊断指标
+# ============================================================================
+cvd_floor_hit_rate:
+  type: "gauge"
+  help: "地板命中率 (scale == sigma_floor)"
+  labels: ["symbol", "regime"]
+  thresholds:
+    warning: 0.1
+    critical: 0.2
+
+cvd_scale_median:
+  type: "gauge"
+  help: "尺度中位数"
+  labels: ["symbol", "regime"]
+  thresholds:
+    warning: 50
+    critical: 20
+
+cvd_sigma_floor_median:
+  type: "gauge"
+  help: "Sigma地板中位数"
+  labels: ["symbol", "regime"]
+
+cvd_ewma_fast_median:
+  type: "gauge"
+  help: "快速EWMA中位数"
+  labels: ["symbol", "regime"]
+
+cvd_ewma_slow_median:
+  type: "gauge"
+  help: "慢速EWMA中位数"
+  labels: ["symbol", "regime"]
+
+# ============================================================================
+# 性能指标
+# ============================================================================
+cvd_messages_total:
+  type: "counter"
+  help: "CVD消息总数"
+  labels: ["symbol", "status"]
+
+cvd_latency_bucket:
+  type: "histogram"
+  help: "CVD处理延迟分布"
+  labels: ["symbol", "le"]
+  buckets: [0.01, 0.05, 0.1, 0.5, 1.0, 2.0, 5.0, 10.0]
+
+cvd_processing_duration_seconds:
+  type: "histogram"
+  help: "CVD处理耗时分布"
+  labels: ["symbol", "operation"]
+  buckets: [0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0]
+
+# ============================================================================
+# 系统健康指标
+# ============================================================================
+cvd_config_version:
+  type: "gauge"
+  help: "CVD配置版本"
+  labels: ["version", "phase"]
+
+cvd_parameter_mad_multiplier:
+  type: "gauge"
+  help: "当前MAD乘数"
+  labels: ["symbol"]
+
+cvd_parameter_scale_fast_weight:
+  type: "gauge"
+  help: "当前快速权重"
+  labels: ["symbol"]
+
+cvd_parameter_half_life_trades:
+  type: "gauge"
+  help: "当前半衰期"
+  labels: ["symbol"]
+
+cvd_parameter_winsor_limit:
+  type: "gauge"
+  help: "当前Winsor限制"
+  labels: ["symbol"]
+
+# ============================================================================
+# 错误和异常指标
+# ============================================================================
+cvd_errors_total:
+  type: "counter"
+  help: "CVD错误总数"
+  labels: ["symbol", "error_type"]
+
+cvd_warnings_total:
+  type: "counter"
+  help: "CVD警告总数"
+  labels: ["symbol", "warning_type"]
+
+cvd_reconnects_total:
+  type: "counter"
+  help: "WebSocket重连总数"
+  labels: ["symbol"]
+
+# ============================================================================
+# 业务指标
+# ============================================================================
+cvd_signal_buy_total:
+  type: "counter"
+  help: "CVD买入信号总数"
+  labels: ["symbol", "regime"]
+
+cvd_signal_sell_total:
+  type: "counter"
+  help: "CVD卖出信号总数"
+  labels: ["symbol", "regime"]
+
+cvd_signal_strength_avg:
+  type: "gauge"
+  help: "CVD信号强度平均值"
+  labels: ["symbol", "regime"]
+
+# ============================================================================
+# 告警规则定义
+# ============================================================================
+alerts:
+  cvd_z_tail_p2_high:
+    expr: "cvd_z_tail_p2 > 8"
+    for: "2m"
+    labels:
+      severity: "critical"
+      component: "cvd"
+    annotations:
+      summary: "CVD P(|Z|>2) 过高"
+      description: "CVD P(|Z|>2) 为 {{ $value }}%，超过8%阈值"
+
+  cvd_z_tail_p3_high:
+    expr: "cvd_z_tail_p3 > 2.5"
+    for: "2m"
+    labels:
+      severity: "warning"
+      component: "cvd"
+    annotations:
+      summary: "CVD P(|Z|>3) 过高"
+      description: "CVD P(|Z|>3) 为 {{ $value }}%，超过2.5%阈值"
+
+  cvd_floor_hit_rate_high:
+    expr: "cvd_floor_hit_rate > 0.2"
+    for: "5m"
+    labels:
+      severity: "warning"
+      component: "cvd"
+    annotations:
+      summary: "CVD地板命中率过高"
+      description: "CVD地板命中率为 {{ $value }}%，可能参数过调"
+
+  cvd_scale_median_low:
+    expr: "cvd_scale_median < 20"
+    for: "5m"
+    labels:
+      severity: "warning"
+      component: "cvd"
+    annotations:
+      summary: "CVD尺度中位数过低"
+      description: "CVD尺度中位数为 {{ $value }}，可能参数过调"
+
+  cvd_latency_high:
+    expr: "histogram_quantile(0.95, rate(cvd_latency_bucket[5m])) > 200"
+    for: "3m"
+    labels:
+      severity: "warning"
+      component: "cvd"
+    annotations:
+      summary: "CVD延迟过高"
+      description: "CVD P95延迟为 {{ $value }}ms，超过200ms阈值"

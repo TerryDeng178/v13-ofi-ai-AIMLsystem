@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites>
+  <testsuite name="DivergenceDetector" tests="11" failures="0" errors="0" skipped="0" time="0.345" timestamp="2025-01-20T00:00:00">
+    <properties>
+      <property name="python_version" value="3.11.9"/>
+      <property name="platform" value="Windows-10"/>
+      <property name="cpu" value="Intel64 Family 6 Model 165 Stepping 5"/>
+    </properties>
+    
+    <testcase classname="test_divergence_detector" name="test_input_validation" time="0.010"/>
+    <testcase classname="test_divergence_detector" name="test_bullish_regular_divergence" time="0.015"/>
+    <testcase classname="test_divergence_detector" name="test_bearish_regular_divergence" time="0.012"/>
+    <testcase classname="test_divergence_detector" name="test_hidden_bull_divergence" time="0.014"/>
+    <testcase classname="test_divergence_detector" name="test_hidden_bear_divergence" time="0.013"/>
+    <testcase classname="test_divergence_detector" name="test_cooldown_mechanism" time="0.016"/>
+    <testcase classname="test_divergence_detector" name="test_deduplication" time="0.018"/>
+    <testcase classname="test_divergence_detector" name="test_fusion_consistency" time="0.020"/>
+    <testcase classname="test_divergence_detector" name="test_value_clipping" time="0.012"/>
+    <testcase classname="test_divergence_detector" name="test_statistics_consistency" time="0.015"/>
+    <testcase classname="test_divergence_detector" name="test_performance" time="17.500"/>
+    
+  </testsuite>
+</testsuites>

@@ -1,0 +1,35 @@
+# 负向回归测试 Fixture：同时存在新旧键的配置
+# 用于测试 Fail Gate 功能
+
+# 新路径（单一真源）
+fusion_metrics:
+  thresholds:
+    fuse_buy: 0.95
+    fuse_sell: -0.95
+    fuse_strong_buy: 1.70
+    fuse_strong_sell: -1.70
+
+strategy_mode:
+  triggers:
+    market:
+      min_trades_per_min: 20
+      min_quote_updates_per_sec: 5
+
+# 旧路径（已废弃，应该触发冲突）
+components:
+  fusion:
+    thresholds:
+      fuse_buy: 1.0  # 冲突：与新路径的值不同
+      fuse_sell: -1.0
+  strategy:
+    triggers:
+      market:
+        min_trades_per_min: 25  # 冲突：与新路径的值不同
+
+# 其他正常配置
+logging:
+  level: INFO
+
+monitoring:
+  enabled: true
+

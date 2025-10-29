@@ -1,0 +1,32 @@
+# 最终修复配置 - 临门一脚方案
+# 目标：将Strong ratio从8.75%压回1-3%区间
+# 策略：小步上调强信号阈值和强一致性门槛
+
+fusion:
+  thresholds:
+    fuse_buy: 1.0
+    fuse_sell: -1.0
+    fuse_strong_buy: 2.3    # 由1.8上调，小步调整
+    fuse_strong_sell: -2.3
+  consistency:
+    min_consistency: 0.20    # 由0.15上调（弱信号更稳）
+    strong_min_consistency: 0.65  # 由0.50-0.60上调
+
+divergence:
+  # 维持现状，冲突率已<2%
+  min_strength: 0.90
+  min_separation_secs: 120
+  count_conflict_only_when_fusion_ge: 1.0
+
+# 备用微调方案（如果Strong仍>3.5%）
+backup_adjustments:
+  # 方案1：再抬强阈
+  fuse_strong_buy: 2.5
+  fuse_strong_sell: -2.5
+  
+  # 方案2：轻微平滑/去极值
+  z_window_increase: 0.20  # +20%
+  winsorize_percentile: 93  # 95%→93%
+  
+  # 方案3：两帧确认（仅限强信号）
+  require_consecutive_strong: 2

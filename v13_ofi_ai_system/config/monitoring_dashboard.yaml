@@ -1,0 +1,190 @@
+# Core Algorithm 监控Dashboard配置
+# 基于最终修复验证报告的关键指标
+
+dashboard:
+  title: "Core Algorithm Signal Pipeline"
+  refresh_interval: 30  # 秒
+  
+  # 核心指标面板
+  core_metrics:
+    - name: "Strong Signal Ratio"
+      query: "strong_signals / total_signals * 100"
+      threshold:
+        warning: 3.0
+        critical: 3.5
+        min_warning: 0.8
+        min_critical: 0.5
+      unit: "%"
+      description: "强信号占比 (目标: 0.8-3.5%)"
+    
+    - name: "Weak Signal Ratio"
+      query: "weak_signals / total_signals * 100"
+      threshold:
+        warning: 25.0
+        critical: 30.0
+      unit: "%"
+      description: "弱信号占比"
+    
+    - name: "Confirm Ratio"
+      query: "confirmed_signals / total_signals * 100"
+      threshold:
+        warning: 50.0
+        critical: 40.0
+      unit: "%"
+      description: "信号确认率 (目标: >0%)"
+    
+    - name: "Divergence vs Fusion Conflict"
+      query: "divergence_conflicts / divergence_signals * 100"
+      threshold:
+        warning: 1.5
+        critical: 2.0
+      unit: "%"
+      description: "背离冲突率 (目标: <2%)"
+    
+    - name: "Strong 5m Directional Accuracy"
+      query: "correct_predictions / total_predictions * 100"
+      threshold:
+        warning: 55.0
+        critical: 52.0
+      unit: "%"
+      description: "强信号5分钟方向准确率 (目标: ≥52%)"
+
+  # Z-Score分布面板
+  z_score_metrics:
+    - name: "P(|z_ofi|>2)"
+      query: "abs_z_ofi_gt_2 / total_signals * 100"
+      threshold:
+        warning: 10.0
+        critical: 12.0
+        min_warning: 4.0
+        min_critical: 3.0
+      unit: "%"
+      description: "OFI Z-Score异常率 (目标: 3-12%)"
+    
+    - name: "P(|z_cvd|>2)"
+      query: "abs_z_cvd_gt_2 / total_signals * 100"
+      threshold:
+        warning: 10.0
+        critical: 12.0
+        min_warning: 4.0
+        min_critical: 3.0
+      unit: "%"
+      description: "CVD Z-Score异常率 (目标: 3-12%)"
+
+  # 性能指标面板
+  performance_metrics:
+    - name: "Event Lag P50"
+      query: "percentile(event_lag_ms, 50)"
+      threshold:
+        warning: 60.0
+        critical: 80.0
+      unit: "ms"
+      description: "事件滞后中位数"
+    
+    - name: "Event Lag P95"
+      query: "percentile(event_lag_ms, 95)"
+      threshold:
+        warning: 100.0
+        critical: 120.0
+      unit: "ms"
+      description: "事件滞后P95 (目标: ≤120ms)"
+    
+    - name: "JsonlSink Queue Size"
+      query: "jsonl_sink_qsize"
+      threshold:
+        warning: 1000
+        critical: 5000
+      unit: "items"
+      description: "JSONL输出队列大小"
+    
+    - name: "JsonlSink Dropped"
+      query: "jsonl_sink_dropped"
+      threshold:
+        warning: 1
+        critical: 10
+      unit: "count"
+      description: "JSONL输出丢弃数 (目标: 0)"
+
+  # 存储健康面板
+  storage_metrics:
+    - name: "Ready Files Count"
+      query: "ready_files_count"
+      threshold:
+        warning: 5
+        critical: 3
+      unit: "files"
+      description: "就绪文件数量"
+    
+    - name: "Spool Files Count"
+      query: "spool_files_count"
+      threshold:
+        warning: 10
+        critical: 20
+      unit: "files"
+      description: "临时文件数量"
+    
+    - name: "Gate Stats Heartbeat"
+      query: "gate_stats_last_update"
+      threshold:
+        warning: 30
+        critical: 60
+      unit: "seconds"
+      description: "门控统计心跳间隔 (目标: ≤60s)"
+
+  # 护栏统计面板
+  guard_metrics:
+    - name: "Warmup Guard"
+      query: "warmup_guard_count"
+      unit: "count"
+      description: "暖启动护栏触发次数"
+    
+    - name: "Exit Cooldown"
+      query: "exit_cooldown_count"
+      unit: "count"
+      description: "退出冷却触发次数"
+    
+    - name: "Low Consistency"
+      query: "low_consistency_count"
+      unit: "count"
+      description: "低一致性触发次数"
+    
+    - name: "Spread Guard"
+      query: "spread_guard_count"
+      unit: "count"
+      description: "价差护栏触发次数"
+
+  # 时间序列图表
+  time_series:
+    - name: "Signal Generation Rate"
+      query: "rate(total_signals[5m])"
+      unit: "signals/min"
+      description: "信号生成速率"
+    
+    - name: "Strong Signal Rate"
+      query: "rate(strong_signals[5m])"
+      unit: "signals/min"
+      description: "强信号生成速率"
+    
+    - name: "Event Lag Trend"
+      query: "avg(event_lag_ms[5m])"
+      unit: "ms"
+      description: "事件滞后趋势"
+
+  # 告警状态面板
+  alert_status:
+    - name: "Overall Health"
+      query: "all_metrics_healthy"
+      states:
+        - "GO"
+        - "WARNING"
+        - "CRITICAL"
+      description: "整体健康状态"
+    
+    - name: "Deployment Status"
+      query: "deployment_phase"
+      states:
+        - "CANARY"
+        - "PARTIAL"
+        - "FULL"
+        - "ROLLBACK"
+      description: "部署阶段状态"

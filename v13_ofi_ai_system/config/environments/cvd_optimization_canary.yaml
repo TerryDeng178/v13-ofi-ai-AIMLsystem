@@ -1,0 +1,110 @@
+# CVD Z-score微调优化 - Canary环境配置
+# 用于小流量灰度测试，包含回滚护栏和特性开关
+
+# CVD Z-score微调优化配置
+cvd_optimization:
+  enabled: true
+  canary_mode: true
+  canary_traffic_percent: 10  # 10%流量
+  
+  # 参数配置
+  parameters:
+    mad_multiplier: 1.47
+    scale_fast_weight: 0.32
+    half_life_trades: 300
+    winsor_limit: 8.0  # 评估用，非交易用
+    
+  # 软冻结配置
+  soft_freeze:
+    enabled: true
+    version: "V2"
+    
+  # 回滚护栏
+  rollback_thresholds:
+    p_z_gt_2_max: 0.08      # P(|Z|>2) > 8% 立即回滚
+    resyncs_max: 0          # 重同步次数 > 0 立即回滚
+    latency_p95_max: 2500   # P95延迟 > 2500ms 立即回滚
+    recv_rate_min: 0.5      # 接收率 < 0.5 条/秒 立即回滚
+    
+  # 监控配置
+  monitoring:
+    enabled: true
+    alert_on_threshold: true
+    check_interval: 30  # 30秒检查一次
+    
+  # 特性开关
+  feature_flags:
+    use_corrected_winsor: true
+    enable_soft_freeze: true
+    enable_regime_analysis: true
+    enable_wilson_ci: true
+
+# 交易执行配置
+execution:
+  enabled: false  # Canary阶段只读信号
+  dry_run: true
+  signal_only: true
+
+# 监控配置
+monitoring:
+  prometheus:
+    enabled: true
+    metrics_path: "/metrics"
+    port: 9090
+    
+  grafana:
+    enabled: true
+    dashboard_path: "grafana/cvd_z_metrics_dashboard.json"
+    
+  # 告警规则
+  alerting:
+    rules:
+      - name: "CVD Z-score尾部风险过高"
+        condition: "cvd_z_tail_p2 > 0.08"
+        severity: "critical"
+        action: "rollback"
+        
+      - name: "CVD Z-score极端值过高"
+        condition: "cvd_z_tail_p3 > 0.02"
+        severity: "warning"
+        action: "alert"
+        
+      - name: "数据接收率过低"
+        condition: "recv_rate < 0.5"
+        severity: "critical"
+        action: "rollback"
+        
+      - name: "事件延迟过高"
+        condition: "latency_event_ms_p95 > 2500"
+        severity: "warning"
+        action: "alert"
+        
+      - name: "系统重同步"
+        condition: "resyncs > 0"
+        severity: "critical"
+        action: "rollback"
+
+# 日志配置
+logging:
+  level: "INFO"
+  format: "json"
+  output: "stdout"
+  
+  # 关键指标日志
+  metrics_logging:
+    enabled: true
+    interval: 60  # 每60秒记录一次关键指标
+    
+# 数据存储配置
+storage:
+  # 测试数据存储
+  test_data:
+    enabled: true
+    path: "data/cvd_optimization_canary"
+    retention_days: 7
+    
+  # 监控数据存储
+  monitoring_data:
+    enabled: true
+    path: "data/monitoring/cvd_optimization"
+    retention_days: 30

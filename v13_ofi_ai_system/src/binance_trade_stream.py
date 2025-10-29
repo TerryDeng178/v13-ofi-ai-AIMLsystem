@@ -45,12 +45,43 @@ except ImportError as e:  # pragma: no cover
     raise RuntimeError("Missing dependency: websockets>=10,<13") from e
 
 # ---- logging ----
-LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
-logging.basicConfig(
-    level=getattr(logging, LOG_LEVEL, logging.INFO),
-    format="%(asctime)s %(levelname)s %(message)s",
-)
+# 延迟初始化日志级别（从配置加载器获取，默认INFO）
+def _get_log_level(config_loader=None):
+    """
+    从配置加载器获取日志级别，如果未提供则使用默认值
+    
+    Args:
+        config_loader: 统一配置加载器实例
+    
+    Returns:
+        str: 日志级别（大写）
+    """
+    if config_loader:
+        try:
+            level = config_loader.get("logging.level", "INFO")
+            return str(level).upper()
+        except Exception:
+            pass
+    # 如果没有配置加载器，使用 defaults.yaml 中的默认值
+    # 这些默认值与 defaults.yaml 保持一致，避免硬编码
+    return "INFO"
+
+# 初始化日志（使用默认值，实际运行时会通过配置加载器更新）
+LOG_LEVEL_DEFAULT = "INFO"
 log = logging.getLogger("binance_trade_stream")
+
+def _setup_logging(config_loader=None):
+    """设置日志配置"""
+    log_level = _get_log_level(config_loader)
+    logging.basicConfig(
+        level=getattr(logging, log_level, logging.INFO),
+        format="%(asctime)s %(levelname)s %(message)s",
+        force=True  # 允许重新配置
+    )
+    log.setLevel(getattr(logging, log_level, logging.INFO))
+
+# 初始设置（使用默认值）
+_setup_logging()
 
 # ---- small rate limiter for noisy warnings ----
 class RateLimiter:
@@ -101,6 +132,9 @@ class MonitoringMetrics:
     queue_dropped: int = 0
     total_messages: int = 0
     parse_errors: int = 0
+    # A2: 强制消息对账
+    emitted_messages: int = 0     # 已发出消息数（水位线输出+flush）
+    persisted_messages: int = 0   # 已落盘消息数
     # P0-B新增监控指标
     agg_dup_count: int = 0        # aggTradeId重复次数（a==last_a）
     agg_backward_count: int = 0  # aggTradeId倒序次数（a<last_a）
@@ -134,6 +168,11 @@ class MonitoringMetrics:
             "total_messages": self.total_messages,
             "parse_errors": self.parse_errors,
             "queue_dropped_rate": self.queue_dropped_rate(),
+            # A2: 强制消息对账
+            "emitted_messages": self.emitted_messages,
+            "persisted_messages": self.persisted_messages,
+            "persist_rate": (self.persisted_messages / self.emitted_messages) if self.emitted_messages > 0 else 0.0,
+            # P0-B监控指标
             "agg_dup_count": self.agg_dup_count,
             "agg_dup_rate": self.agg_dup_rate(),
             "agg_backward_count": self.agg_backward_count,
@@ -208,6 +247,9 @@ class WatermarkBuffer:
             self.last_a = agg_id_out
             output.append(data_out)
         
+        # A2: 计数已发出消息
+        metrics.emitted_messages += len(output)
+        
         return output
     
     def flush_all(self, metrics: MonitoringMetrics) -> List[Tuple]:
@@ -235,6 +277,10 @@ class WatermarkBuffer:
             
             self.last_a = agg_id_out
             output.append(data_out)
+        
+        # A2: 计数已发出消息（flush阶段）
+        metrics.emitted_messages += len(output)
+        
         return output
 
 # ---- parsing ----
@@ -259,16 +305,16 @@ def parse_aggtrade_message(text: str) -> Optional[Tuple[float, float, bool, Opti
         return None
 
 # ---- websocket consumer ----
-async def ws_consume(url: str, queue: asyncio.Queue, stop_evt: asyncio.Event, metrics: MonitoringMetrics):
-    heartbeat_timeout = int(os.getenv("HEARTBEAT_TIMEOUT", "60"))
-    backoff_max = int(os.getenv("BACKOFF_MAX", "30"))
+async def ws_consume(url: str, queue: asyncio.Queue, stop_evt: asyncio.Event, metrics: MonitoringMetrics, 
+                     heartbeat_timeout: int = 30, backoff_max: int = 15, ping_interval: int = 20, 
+                     close_timeout: int = 10):
     warn_rl = RateLimiter(max_per_sec=5)
 
     backoff = 1.0
     first_connect = True
     while not stop_evt.is_set():
         try:
-            async with websockets.connect(url, ping_interval=None, close_timeout=5) as ws:
+            async with websockets.connect(url, ping_interval=ping_interval, close_timeout=close_timeout) as ws:
                 log.info("Connected: %s", url)
                 if not first_connect:
                     metrics.reconnect_count += 1
@@ -301,25 +347,265 @@ async def ws_consume(url: str, queue: asyncio.Queue, stop_evt: asyncio.Event, me
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2.0, float(backoff_max))
 
+# ---- Trade Stream Processor Class ----
+class TradeStreamProcessor:
+    """交易流处理器 - 支持统一配置"""
+    
+    def __init__(self, config_loader=None):
+        """
+        初始化交易流处理器
+        
+        Args:
+            config_loader: 配置加载器实例，用于从统一配置系统加载参数
+        """
+        if config_loader:
+            # 从统一配置系统加载参数
+            from trade_stream_config_loader import TradeStreamConfigLoader
+            self.config_loader = TradeStreamConfigLoader(config_loader)
+            self.config = self.config_loader.load_config()
+        else:
+            # 使用默认配置
+            self.config_loader = None
+            self.config = None
+    
+    def get_websocket_config(self):
+        """获取WebSocket配置"""
+        if self.config:
+            return self.config.websocket
+        else:
+            # 默认配置
+            from trade_stream_config_loader import WebSocketConfig
+            return WebSocketConfig()
+    
+    def get_queue_config(self):
+        """获取队列配置"""
+        if self.config:
+            return self.config.queue
+        else:
+            # 默认配置
+            from trade_stream_config_loader import QueueConfig
+            return QueueConfig()
+    
+    def get_logging_config(self):
+        """获取日志配置"""
+        if self.config:
+            return self.config.logging
+        else:
+            # 默认配置
+            from trade_stream_config_loader import LoggingConfig
+            return LoggingConfig()
+    
+    def get_performance_config(self):
+        """获取性能配置"""
+        if self.config:
+            return self.config.performance
+        else:
+            # 默认配置
+            from trade_stream_config_loader import PerformanceConfig
+            return PerformanceConfig()
+    
+    def get_monitoring_config(self):
+        """获取监控配置"""
+        if self.config:
+            return self.config.monitoring
+        else:
+            # 默认配置
+            from trade_stream_config_loader import MonitoringConfig
+            return MonitoringConfig()
+    
+    async def start_stream(self, symbol: str, url: str = None, duration: Optional[int] = None):
+        """
+        启动交易流处理
+        
+        Args:
+            symbol: 交易对符号
+            url: WebSocket URL，默认从环境变量获取
+            duration: 测试时长（秒），None表示无限运行
+        """
+        # 获取配置
+        websocket_config = self.get_websocket_config()
+        queue_config = self.get_queue_config()
+        logging_config = self.get_logging_config()
+        performance_config = self.get_performance_config()
+        
+        # 构建URL
+        if url is None:
+            # 优先从配置加载器获取
+            if self.config_loader and self.config_loader._base_config_loader:
+                try:
+                    # 从 data_source.websocket 获取配置
+                    ws_config = self.config_loader._base_config_loader.get("data_source.websocket", {})
+                    base_url = ws_config.get("connection", {}).get("base_url")
+                    if base_url:
+                        url = f"{base_url}stream?streams={symbol.lower()}@aggTrade"
+                    else:
+                        # 使用默认URL构建
+                        url = f"wss://fstream.binance.com/stream?streams={symbol.lower()}@aggTrade"
+                except Exception:
+                    # 如果获取失败，使用默认URL
+                    url = f"wss://fstream.binance.com/stream?streams={symbol.lower()}@aggTrade"
+            else:
+                # 如果没有配置加载器，使用默认URL构建（不再读取环境变量）
+                url = f"wss://fstream.binance.com/stream?streams={symbol.lower()}@aggTrade"
+        
+        # 创建队列和事件
+        q: asyncio.Queue = asyncio.Queue(maxsize=queue_config.size)
+        stop_evt = asyncio.Event()
+        metrics = MonitoringMetrics()
+        
+        # 数据收集
+        data_records = []
+        start_time = time.time()
+        
+        # 创建数据目录
+        from pathlib import Path
+        import pandas as pd
+        import json
+        from datetime import datetime
+        
+        # 使用绝对路径：从src目录回到项目根目录
+        project_root = Path(__file__).parent.parent
+        data_dir = project_root / "data" / "cvd"
+        data_dir.mkdir(parents=True, exist_ok=True)
+        
+        # 创建子目录（按日期和交易对）
+        today = datetime.now().strftime("%Y%m%d")
+        symbol_dir = data_dir / today / symbol
+        symbol_dir.mkdir(parents=True, exist_ok=True)
+        
+        # 生成文件名
+        run_time = datetime.now().strftime("%H%M%S")
+        output_file = symbol_dir / f"run_{run_time}_cvd_data.parquet"
+        
+        log.info(f"[DATA] 数据将保存到: {output_file}")
+        
+        # 设置信号处理
+        loop = asyncio.get_running_loop()
+        def _set_stop(*_a):
+            if not stop_evt.is_set():
+                stop_evt.set()
+        try:
+            loop.add_signal_handler(signal.SIGINT, _set_stop)
+        except NotImplementedError:
+            pass
+        try:
+            loop.add_signal_handler(signal.SIGTERM, _set_stop)
+        except (NotImplementedError, AttributeError):
+            pass
+        
+        # 启动任务
+        prod = asyncio.create_task(ws_consume(
+            url, q, stop_evt, metrics,
+            heartbeat_timeout=websocket_config.heartbeat_timeout,
+            backoff_max=websocket_config.backoff_max,
+            ping_interval=websocket_config.ping_interval,
+            close_timeout=websocket_config.close_timeout
+        ))
+        cons = asyncio.create_task(processor(
+            symbol, q, stop_evt, metrics,
+            watermark_ms=performance_config.watermark_ms,  # 使用性能配置的水位线
+            print_every=logging_config.print_every,
+            stats_interval=logging_config.stats_interval,
+            data_records=data_records
+        ))
+        
+        log.info("Starting trade stream for %s | url=%s | duration=%s", symbol, url, f"{duration}s" if duration else "unlimited")
+        
+        # 如果设置了duration，启动定时器
+        timer_task = None
+        if duration:
+            async def timer():
+                await asyncio.sleep(duration)
+                log.info("Duration %ds reached, stopping stream...", duration)
+                stop_evt.set()
+            timer_task = asyncio.create_task(timer())
+        
+        try:
+            await stop_evt.wait()
+        except KeyboardInterrupt:
+            _set_stop()
+        finally:
+            if timer_task:
+                timer_task.cancel()
+            prod.cancel()
+            # 不要立即取消cons，让它自然结束以完成数据收集
+            # cons.cancel()
+            await asyncio.gather(prod, cons, timer_task, return_exceptions=True)
+            log.info("Graceful shutdown. Final metrics: %s", metrics.to_dict())
+            
+            # 保存数据到parquet文件
+            if data_records:
+                log.info(f"[DATA] 保存 {len(data_records)} 条记录到 {output_file}")
+                df = pd.DataFrame(data_records)
+                df.to_parquet(output_file, index=False)
+                log.info(f"[DATA] 数据已保存到: {output_file}")
+                
+                # 生成监控指标JSON
+                end_time = time.time()
+                duration_seconds = end_time - start_time
+                
+                metrics_data = {
+                    "run_info": {
+                        "start_time": datetime.fromtimestamp(start_time).isoformat(),
+                        "end_time": datetime.fromtimestamp(end_time).isoformat(),
+                        "duration_seconds": duration_seconds,
+                        "total_records": len(data_records),
+                        "symbol": symbol
+                    },
+                    "performance": {
+                        "queue_dropped_rate": float(metrics.queue_dropped_rate()),
+                        "parse_errors": int(metrics.parse_errors),
+                        "reconnect_count": int(metrics.reconnect_count),
+                        # A2: 对账字段
+                        "emitted_messages": int(metrics.emitted_messages),
+                        "persisted_messages": int(metrics.persisted_messages),
+                        "persist_rate": (metrics.persisted_messages / metrics.emitted_messages) if metrics.emitted_messages > 0 else 0.0
+                    },
+                    "data_file": str(output_file)
+                }
+                
+                # 保存监控指标
+                metrics_file = symbol_dir / f"run_{run_time}_metrics.json"
+                with open(metrics_file, 'w', encoding='utf-8') as f:
+                    json.dump(metrics_data, f, ensure_ascii=False, indent=2)
+                log.info(f"[DATA] 监控指标已保存到: {metrics_file}")
+            else:
+                log.warning("[DATA] 没有数据记录需要保存")
+
 # ---- processor ----
-async def processor(symbol: str, queue: asyncio.Queue, stop_evt: asyncio.Event, metrics: MonitoringMetrics):
+async def processor(symbol: str, queue: asyncio.Queue, stop_evt: asyncio.Event, metrics: MonitoringMetrics, 
+                   watermark_ms: int = 2000, print_every: int = 100, stats_interval: float = 60.0, data_records: list = None):
     cfg = CVDConfig()
     calc = RealCVDCalculator(symbol=symbol, cfg=cfg)
 
     # P0-B: 初始化水位线缓冲
-    watermark_ms = int(os.getenv("WATERMARK_MS", "2000"))
     watermark = WatermarkBuffer(watermark_ms=watermark_ms)
     log.info("[P0-B] Watermark buffer initialized: watermark_ms=%d", watermark_ms)
 
     perf = PerfStats()
-    print_every = int(os.getenv("PRINT_EVERY", "100"))  # 每100条打印一次
+    # 使用传入的参数，不再从环境变量读取
     processed = 0
-    stats_interval = 60.0
     last_stats = time.time()
+    
+    # 如果没有提供data_records，创建一个新的
+    if data_records is None:
+        data_records = []
+    
+    # P3: 诊断抽样缓存
+    last_diag_stats = {}
 
     while not stop_evt.is_set():
+        # P1: 突发出队优化
+        burst = []
         try:
+            # 先阻塞拿1条，避免空转
             ts_recv, raw = await asyncio.wait_for(queue.get(), timeout=1.0)
+            burst.append(raw)
+            # 再尽量无阻塞多拿一些，最多拿到当前队列一半
+            n_extra = max(0, queue.qsize() // 2)
+            for _ in range(n_extra):
+                ts_recv, raw_msg = queue.get_nowait()
+                burst.append(raw_msg)
         except asyncio.TimeoutError:
             if (time.time() - last_stats) >= stats_interval:
                 snap = perf.snapshot_and_reset()
@@ -327,21 +613,28 @@ async def processor(symbol: str, queue: asyncio.Queue, stop_evt: asyncio.Event, 
                          snap["count"], snap["avg_ms"], metrics.to_dict())
                 last_stats = time.time()
             continue
+        except asyncio.QueueEmpty:
+            pass  # 队列已空，正常继续处理burst中已有的消息
 
         t0 = time.time()
-        parsed = parse_aggtrade_message(raw)
-        if parsed is None:
-            metrics.parse_errors += 1
-            log.warning("Parse error on message (truncated): %s", raw[:160])
-            continue
-
-        price, qty, is_buy, event_ms, agg_trade_id = parsed
         
-        # P0-B: 送入水位线重排，返回排序后可输出的消息
-        ready_list = watermark.feed(event_ms, agg_trade_id, parsed, metrics)
+        # P1: 批量parse + 水位线
+        ready_all = []
+        for raw in burst:
+            parsed = parse_aggtrade_message(raw)
+            if parsed is None:
+                metrics.parse_errors += 1
+                log.warning("Parse error on message (truncated): %s", raw[:160])
+                continue
+            
+            price, qty, is_buy, event_ms, agg_trade_id = parsed
+            
+            # P0-B: 送入水位线重排，返回排序后可输出的消息  
+            ready_list = watermark.feed(event_ms, agg_trade_id, parsed, metrics)
+            ready_all.extend(ready_list)
         
-        # 处理所有ready的消息
-        for ready_parsed in ready_list:
+        # P1: 批量处理所有ready的消息
+        for ready_parsed in ready_all:
             price_r, qty_r, is_buy_r, event_ms_r, agg_trade_id_r = ready_parsed
             ret = calc.update_with_trade(price=price_r, qty=qty_r, is_buy=is_buy_r, event_time_ms=event_ms_r)
             processed += 1
@@ -350,6 +643,46 @@ async def processor(symbol: str, queue: asyncio.Queue, stop_evt: asyncio.Event, 
             
             # 计算延迟（从交易所事件时间到现在）
             latency_ms = (time.time() * 1000 - event_ms_r) if event_ms_r else 0.0
+            
+            # B1: 获取CVD诊断信息（P3: 每50笔抽样一次）
+            if processed % 50 == 0:
+                try:
+                    stats = calc.get_z_stats()
+                    last_diag_stats = stats  # 更新缓存
+                except Exception:
+                    stats = last_diag_stats if last_diag_stats else {}
+            else:
+                stats = last_diag_stats if last_diag_stats else {}
+            
+            # 收集数据记录
+            record = {
+                'ts': time.time(),
+                'event_time_ms': event_ms_r,
+                'price': price_r,
+                'qty': qty_r,
+                'is_buy': is_buy_r,
+                'agg_trade_id': agg_trade_id_r,
+                'cvd': ret["cvd"],
+                'z_cvd': ret["z_cvd"],
+                'ema_cvd': ret["ema_cvd"],
+                'meta.bad_points': ret["meta"]["bad_points"],
+                'meta.warmup': ret["meta"]["warmup"],
+                'meta.std_zero': ret["meta"]["std_zero"],
+                # B1: CVD诊断字段
+                'z_mode': stats.get('z_mode', calc.cfg.z_mode),
+                'current_tps': stats.get('current_tps', 0.0),
+                'sigma_floor': stats.get('sigma_floor', 0.0),
+                'ewma_mix': stats.get('ewma_mix', 0.0),
+                'floor_used': stats.get('floor_used', False),
+                'reconnect_count': metrics.reconnect_count,
+                'queue_dropped': metrics.queue_dropped,
+                'total_messages': metrics.total_messages,
+                'parse_errors': metrics.parse_errors,
+                'latency_ms': latency_ms
+            }
+            data_records.append(record)
+            # A2: 计数已落盘消息
+            metrics.persisted_messages += 1
 
             if processed % print_every == 0 or processed <= 5:
                 log.info(
@@ -371,51 +704,80 @@ async def processor(symbol: str, queue: asyncio.Queue, stop_evt: asyncio.Event, 
         price_r, qty_r, is_buy_r, event_ms_r, agg_trade_id_r = ready_parsed
         ret = calc.update_with_trade(price=price_r, qty=qty_r, is_buy=is_buy_r, event_time_ms=event_ms_r)
         processed += 1
+        
+        # 收集flush阶段的数据记录
+        latency_ms = (time.time() * 1000 - event_ms_r) if event_ms_r else 0.0
+        
+        # B1: 获取CVD诊断信息（flush阶段复用缓存）
+        stats = last_diag_stats if last_diag_stats else {}
+        
+        record = {
+            'ts': time.time(),
+            'event_time_ms': event_ms_r,
+            'price': price_r,
+            'qty': qty_r,
+            'is_buy': is_buy_r,
+            'agg_trade_id': agg_trade_id_r,
+            'cvd': ret["cvd"],
+            'z_cvd': ret["z_cvd"],
+            'ema_cvd': ret["ema_cvd"],
+            'meta.bad_points': ret["meta"]["bad_points"],
+            'meta.warmup': ret["meta"]["warmup"],
+            'meta.std_zero': ret["meta"]["std_zero"],
+            # B1: CVD诊断字段
+            'z_mode': stats.get('z_mode', calc.cfg.z_mode),
+            'current_tps': stats.get('current_tps', 0.0),
+            'sigma_floor': stats.get('sigma_floor', 0.0),
+            'ewma_mix': stats.get('ewma_mix', 0.0),
+            'floor_used': stats.get('floor_used', False),
+            'reconnect_count': metrics.reconnect_count,
+            'queue_dropped': metrics.queue_dropped,
+            'total_messages': metrics.total_messages,
+            'parse_errors': metrics.parse_errors,
+            'latency_ms': latency_ms
+        }
+        data_records.append(record)
+        # A2: 计数已落盘消息
+        metrics.persisted_messages += 1
+    
     log.info("[P0-B] Flushed %d messages, total processed=%d", len(remaining), processed)
 
 # ---- main ----
-async def main(symbol: Optional[str] = None, url: Optional[str] = None):
-    sym = (symbol or os.getenv("SYMBOL", "ETHUSDT")).upper()
-    url = url or os.getenv(
-        "WS_URL",
-        f"wss://fstream.binancefuture.com/stream?streams={sym.lower()}@aggTrade",
-    )
-
-    queue_size = int(os.getenv("QUEUE_SIZE", "1024"))
-    q: asyncio.Queue = asyncio.Queue(maxsize=queue_size)
-    stop_evt = asyncio.Event()
-    metrics = MonitoringMetrics()
-
-    loop = asyncio.get_running_loop()
-    def _set_stop(*_a):
-        if not stop_evt.is_set():
-            stop_evt.set()
-    try:
-        loop.add_signal_handler(signal.SIGINT, _set_stop)
-    except NotImplementedError:
-        pass
-    try:
-        loop.add_signal_handler(signal.SIGTERM, _set_stop)
-    except (NotImplementedError, AttributeError):
-        pass
-
-    prod = asyncio.create_task(ws_consume(url, q, stop_evt, metrics))
-    cons = asyncio.create_task(processor(sym, q, stop_evt, metrics))
-
-    log.info("Starting trade stream for %s | url=%s", sym, url)
-    try:
-        await stop_evt.wait()
-    except KeyboardInterrupt:
-        _set_stop()
-    finally:
-        prod.cancel(); cons.cancel()
-        await asyncio.gather(prod, cons, return_exceptions=True)
-        log.info("Graceful shutdown. Final metrics: %s", metrics.to_dict())
+async def main(symbol: Optional[str] = None, url: Optional[str] = None, config_loader=None, duration: Optional[int] = None):
+    """
+    主函数 - 支持统一配置系统
+    
+    Args:
+        symbol: 交易对符号
+        url: WebSocket URL
+        config_loader: 配置加载器实例
+        duration: 测试时长（秒），None表示无限运行
+    """
+    # 优先从配置加载器获取symbol
+    if symbol:
+        sym = symbol.upper()
+    elif config_loader:
+        try:
+            sym = config_loader.get("data_source.default_symbol", "ETHUSDT").upper()
+        except Exception:
+            sym = "ETHUSDT"
+    else:
+        # 如果没有配置加载器，使用默认symbol（不再读取环境变量）
+        sym = "ETHUSDT"
+    
+    # 使用配置加载器设置日志
+    if config_loader:
+        _setup_logging(config_loader)
+    
+    # 使用新的交易流处理器
+    processor = TradeStreamProcessor(config_loader=config_loader)
+    await processor.start_stream(sym, url, duration)
 
 if __name__ == "__main__":
     import argparse
     ap = argparse.ArgumentParser()
     ap.add_argument("--symbol", type=str, default=None, help="symbol, e.g. ETHUSDT (default from ENV SYMBOL)")
     ap.add_argument("--url", type=str, default=None, help="override websocket URL (default from ENV WS_URL)")
+    ap.add_argument("--duration", type=int, default=None, help="test duration in seconds (default: run indefinitely)")
     args = ap.parse_args()
-    asyncio.run(main(symbol=args.symbol, url=args.url))
+    asyncio.run(main(symbol=args.symbol, url=args.url, duration=args.duration))

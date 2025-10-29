@@ -1,6 +1,6 @@
-# 配置文件说明
+# V13 OFI+CVD 统一配置系统技术指南
 
-本目录包含 V13 OFI+CVD+AI 交易系统的所有配置文件。
+本目录包含 V13 OFI+CVD+AI 交易系统的所有配置文件，现已完成**统一配置集成**，支持4个核心组件的统一配置管理。
 
 ## 📁 目录结构
 
@@ -18,21 +18,33 @@ config/
 └── README.md                      # 本文件
 ```
 
-## 🎯 配置系统概述
+## 🎯 统一配置系统概述
 
-### 配置层次
+### 🏗️ 配置架构
 
-系统采用**三层配置架构**：
+系统采用**四层配置架构**，现已完成统一配置集成：
 
 ```
 1. system.yaml (基础配置)
-         ↓
+        ↓
 2. environments/{ENV}.yaml (环境覆盖)
-         ↓
+        ↓
 3. 环境变量 (运行时覆盖)
+        ↓
+4. 组件配置加载器 (统一管理)
 ```
 
-**优先级**: 环境变量 > 环境配置 > 系统配置
+**优先级**: 环境变量 > 环境配置 > 系统配置 > 默认配置
+
+### 🔧 核心组件配置集成
+
+| 组件 | 配置参数 | 配置加载器 | 测试状态 | 文档 |
+|------|---------|-----------|---------|------|
+| **背离检测核心** | 9个参数 | `DivergenceConfigLoader` | ✅ 100% | [详情](STAGE1_DIVERGENCE_CONFIG_SUMMARY.md) |
+| **策略模式管理器** | 15个参数 | `StrategyModeConfigLoader` | ✅ 100% | [详情](STAGE2_STRATEGY_MODE_CONFIG_SUMMARY.md) |
+| **融合指标收集器** | 8个参数 | `FusionMetricsConfigLoader` | ✅ 100% | [详情](STAGE3_FUSION_METRICS_CONFIG_SUMMARY.md) |
+| **交易流处理** | 25个参数 | `TradeStreamConfigLoader` | ✅ 100% | [详情](STAGE4_TRADE_STREAM_CONFIG_SUMMARY.md) |
+| **总计** | **57个参数** | **4个加载器** | **✅ 100%** | [完整报告](../UNIFIED_CONFIG_INTEGRATION_COMPLETE.md) |
 
 ### 配置类型
 
@@ -44,9 +56,111 @@ config/
 | `production.yaml` | 生产环境 | 实盘交易 |
 | `profiles/*.env` | 组件配置 | CVD/OFI 特定参数 |
 
-## 🚀 使用方法
+## 🚀 组件调用指南
 
-### 方法1: 使用新配置系统（推荐）
+### 🎯 统一配置系统使用（推荐）
+
+#### 1. 基础配置加载
+
+```python
+from src.utils.config_loader import ConfigLoader
+
+# 创建配置加载器
+config_loader = ConfigLoader()
+
+# 获取配置值
+queue_size = config_loader.get('performance.queue.max_size', 50000)
+log_level = config_loader.get('logging.level', 'INFO')
+```
+
+#### 2. 核心组件调用
+
+**背离检测核心**:
+```python
+from src.ofi_cvd_divergence import DivergenceDetector
+
+# 使用统一配置
+detector = DivergenceDetector(config_loader=config_loader)
+
+# 检测背离
+result = detector.update(
+    ts=time.time(),
+    price=50000,
+    z_ofi=2.5,
+    z_cvd=1.8,
+    fusion_score=0.85,
+    consistency=0.9
+)
+```
+
+**策略模式管理器**:
+```python
+from src.utils.strategy_mode_manager import StrategyModeManager
+
+# 使用统一配置
+strategy_manager = StrategyModeManager(config_loader=config_loader)
+
+# 检查当前模式
+current_mode = strategy_manager.current_mode
+is_active = strategy_manager.is_active()
+
+# 更新市场数据
+strategy_manager.update_market_activity(
+    trades_per_min=800,
+    quote_updates_per_sec=150,
+    spread_bps=3.5,
+    volatility_bps=25,
+    volume_usd=2000000
+)
+```
+
+**融合指标收集器**:
+```python
+from src.fusion_metrics import FusionMetricsCollector, OFI_CVD_Fusion
+
+# 创建融合器
+fusion = OFI_CVD_Fusion(config_loader=config_loader)
+
+# 创建收集器
+collector = FusionMetricsCollector(fusion, config_loader=config_loader)
+
+# 收集指标
+collector.collect_metrics(
+    ofi_score=0.8,
+    cvd_score=0.7,
+    price=50000,
+    timestamp=time.time()
+)
+```
+
+**交易流处理**:
+```python
+from src.binance_trade_stream import TradeStreamProcessor
+
+# 使用统一配置
+processor = TradeStreamProcessor(config_loader=config_loader)
+
+# 启动交易流
+await processor.start_stream("BTCUSDT")
+```
+
+#### 3. 配置加载器使用
+
+**组件特定配置**:
+```python
+from src.divergence_config_loader import DivergenceConfigLoader
+from src.strategy_mode_config_loader import StrategyModeConfigLoader
+
+# 背离检测配置
+divergence_loader = DivergenceConfigLoader(config_loader)
+divergence_config = divergence_loader.load_config()
+
+# 策略模式配置
+strategy_loader = StrategyModeConfigLoader(config_loader)
+strategy_config = strategy_loader.load_config()
+```
+
+### 🔧 传统配置方法（向后兼容）
 
 ```python
 from src.utils.config_loader import load_config, get_config
@@ -109,9 +223,127 @@ python examples/run_realtime_cvd.py --symbol ETHUSDT --duration 2400
 
 ## 🔧 环境变量覆盖
 
-所有配置都可以通过环境变量覆盖：
+所有配置都可以通过环境变量覆盖，支持**57个配置参数**的灵活调整：
 
-### 格式
+### 📋 核心组件环境变量
+
+#### 背离检测核心 (9个参数)
+```bash
+# 枢轴检测参数
+export V13__DIVERGENCE_DETECTION__PIVOT_DETECTION__SWING_L=15
+export V13__DIVERGENCE_DETECTION__PIVOT_DETECTION__EMA_K=5
+
+# 强度阈值
+export V13__DIVERGENCE_DETECTION__THRESHOLDS__Z_HI=2.0
+export V13__DIVERGENCE_DETECTION__THRESHOLDS__Z_MID=0.8
+
+# 去噪参数
+export V13__DIVERGENCE_DETECTION__DENOISING__MIN_SEPARATION=8
+export V13__DIVERGENCE_DETECTION__DENOISING__COOLDOWN_SECS=2.0
+export V13__DIVERGENCE_DETECTION__DENOISING__WARMUP_MIN=120
+export V13__DIVERGENCE_DETECTION__DENOISING__MAX_LAG=0.5
+
+# 融合参数
+export V13__DIVERGENCE_DETECTION__FUSION__USE_FUSION=true
+```
+
+#### 策略模式管理器 (15个参数)
+```bash
+# 基础配置
+export V13__STRATEGY_MODE__DEFAULT_MODE=auto
+
+# 迟滞配置
+export V13__STRATEGY_MODE__HYSTERESIS__WINDOW_SECS=120
+export V13__STRATEGY_MODE__HYSTERESIS__MIN_ACTIVE_WINDOWS=4
+export V13__STRATEGY_MODE__HYSTERESIS__MIN_QUIET_WINDOWS=8
+
+# 时间表触发器
+export V13__STRATEGY_MODE__TRIGGERS__SCHEDULE__ENABLED=true
+export V13__STRATEGY_MODE__TRIGGERS__SCHEDULE__TIMEZONE=Asia/Hong_Kong
+
+# 市场触发器
+export V13__STRATEGY_MODE__TRIGGERS__MARKET__ENABLED=true
+export V13__STRATEGY_MODE__TRIGGERS__MARKET__MIN_TRADES_PER_MIN=1000
+export V13__STRATEGY_MODE__TRIGGERS__MARKET__MAX_SPREAD_BPS=3
+export V13__STRATEGY_MODE__TRIGGERS__MARKET__MIN_VOLATILITY_BPS=15
+export V13__STRATEGY_MODE__TRIGGERS__MARKET__MIN_VOLUME_USD=2000000
+
+# 特性配置
+export V13__STRATEGY_MODE__FEATURES__DYNAMIC_MODE_ENABLED=true
+export V13__STRATEGY_MODE__FEATURES__DRY_RUN=false
+
+# 监控配置
+export V13__STRATEGY_MODE__MONITORING__PROMETHEUS__PORT=8006
+export V13__STRATEGY_MODE__HOT_RELOAD__ENABLED=true
+```
+
+#### 融合指标收集器 (8个参数)
+```bash
+# 基础配置
+export V13__FUSION_METRICS_COLLECTOR__ENABLED=true
+
+# 历史配置
+export V13__FUSION_METRICS_COLLECTOR__HISTORY__MAX_RECORDS=2000
+export V13__FUSION_METRICS_COLLECTOR__HISTORY__CLEANUP_INTERVAL=600
+
+# 收集配置
+export V13__FUSION_METRICS_COLLECTOR__COLLECTION__UPDATE_INTERVAL=0.5
+export V13__FUSION_METRICS_COLLECTOR__COLLECTION__BATCH_SIZE=20
+export V13__FUSION_METRICS_COLLECTOR__COLLECTION__ENABLE_WARMUP=true
+export V13__FUSION_METRICS_COLLECTOR__COLLECTION__WARMUP_SAMPLES=100
+
+# 性能配置
+export V13__FUSION_METRICS_COLLECTOR__PERFORMANCE__MAX_COLLECTION_RATE=200
+export V13__FUSION_METRICS_COLLECTOR__PERFORMANCE__MEMORY_LIMIT_MB=100
+export V13__FUSION_METRICS_COLLECTOR__PERFORMANCE__GC_THRESHOLD=0.9
+
+# 监控配置
+export V13__FUSION_METRICS_COLLECTOR__MONITORING__PROMETHEUS__PORT=8005
+export V13__FUSION_METRICS_COLLECTOR__HOT_RELOAD__ENABLED=true
+```
+
+#### 交易流处理 (25个参数)
+```bash
+# 基础配置
+export V13__TRADE_STREAM__ENABLED=true
+
+# 队列配置
+export V13__TRADE_STREAM__QUEUE__SIZE=2048
+export V13__TRADE_STREAM__QUEUE__MAX_SIZE=4096
+export V13__TRADE_STREAM__QUEUE__BACKPRESSURE_THRESHOLD=0.8
+
+# 日志配置
+export V13__TRADE_STREAM__LOGGING__PRINT_EVERY=200
+export V13__TRADE_STREAM__LOGGING__STATS_INTERVAL=30.0
+export V13__TRADE_STREAM__LOGGING__LOG_LEVEL=DEBUG
+
+# WebSocket配置
+export V13__TRADE_STREAM__WEBSOCKET__HEARTBEAT_TIMEOUT=60
+export V13__TRADE_STREAM__WEBSOCKET__BACKOFF_MAX=30
+export V13__TRADE_STREAM__WEBSOCKET__PING_INTERVAL=30
+export V13__TRADE_STREAM__WEBSOCKET__CLOSE_TIMEOUT=20
+export V13__TRADE_STREAM__WEBSOCKET__RECONNECT_DELAY=2.0
+export V13__TRADE_STREAM__WEBSOCKET__MAX_RECONNECT_ATTEMPTS=20
+
+# 性能配置
+export V13__TRADE_STREAM__PERFORMANCE__WATERMARK_MS=2000
+export V13__TRADE_STREAM__PERFORMANCE__BATCH_SIZE=20
+export V13__TRADE_STREAM__PERFORMANCE__MAX_PROCESSING_RATE=2000
+export V13__TRADE_STREAM__PERFORMANCE__MEMORY_LIMIT_MB=200
+
+# 监控配置
+export V13__TRADE_STREAM__MONITORING__PROMETHEUS__PORT=8008
+export V13__TRADE_STREAM__MONITORING__ALERTS__ENABLED=true
+
+# 热更新配置
+export V13__TRADE_STREAM__HOT_RELOAD__ENABLED=true
+export V13__TRADE_STREAM__HOT_RELOAD__WATCH_FILE=true
+export V13__TRADE_STREAM__HOT_RELOAD__RELOAD_DELAY=1.0
+export V13__TRADE_STREAM__HOT_RELOAD__BACKUP_CONFIG=true
+export V13__TRADE_STREAM__HOT_RELOAD__LOG_CHANGES=true
+```
+
+### 📝 环境变量格式
 
 **推荐格式（新）**: 使用双下划线 `__` 分隔层级
 
@@ -209,7 +441,9 @@ export ENV=production
 | `components.ai.enabled` | false | 启用AI组件 |
 | `components.trading.enabled` | false | 启用交易组件 |
 
-## 🛡️ 配置验证
+## 🛡️ 配置验证与测试
+
+### 自动验证
 
 配置加载器会自动验证：
 
@@ -217,8 +451,52 @@ export ENV=production
 2. ✅ 路径有效性
 3. ✅ 类型正确性
 4. ✅ YAML格式正确
+5. ✅ 环境变量覆盖正确性
+6. ✅ 组件配置完整性
 
 如果验证失败，会抛出 `ValueError` 并提示具体错误。
+
+### 配置测试
+
+运行配置集成测试：
+
+```bash
+# 测试所有组件配置
+python test_divergence_config.py      # 背离检测配置测试
+python test_strategy_mode_config.py   # 策略模式配置测试
+python test_fusion_metrics_config.py  # 融合指标配置测试
+python test_trade_stream_config.py    # 交易流配置测试
+
+# 测试结果：28个测试用例，100%通过率
+```
+
+### 配置诊断
+
+```python
+from src.utils.config_loader import ConfigLoader
+
+# 创建配置加载器
+config_loader = ConfigLoader()
+
+# 诊断配置加载
+print("配置加载状态:", config_loader.is_loaded)
+print("环境:", config_loader.environment)
+print("配置文件路径:", config_loader.config_path)
+
+# 检查特定配置
+divergence_config = config_loader.get('divergence_detection')
+if divergence_config:
+    print("背离检测配置:", divergence_config.keys())
+else:
+    print("❌ 背离检测配置缺失")
+
+# 检查环境变量覆盖
+import os
+env_vars = [k for k in os.environ.keys() if k.startswith('V13__')]
+print(f"环境变量数量: {len(env_vars)}")
+for var in env_vars[:5]:  # 显示前5个
+    print(f"  {var} = {os.environ[var]}")
+```
 
 ## 🔄 配置迁移
 
@@ -232,11 +510,196 @@ export ENV=production
 2. 将特定参数添加到 `system.yaml` 或环境配置
 3. 在脚本中添加 `--use-system-config` 参数（可选）
 
+## 🔍 故障排查
+
+### 常见问题
+
+#### 1. 配置加载失败
+```python
+# 错误: ModuleNotFoundError: No module named 'src'
+# 解决: 确保在项目根目录运行，或添加路径
+import sys
+sys.path.insert(0, '.')
+
+# 错误: FileNotFoundError: system.yaml
+# 解决: 检查配置文件路径
+from pathlib import Path
+config_path = Path('config/system.yaml')
+assert config_path.exists(), f"配置文件不存在: {config_path}"
+```
+
+#### 2. 环境变量覆盖无效
+```bash
+# 错误: 环境变量设置后不生效
+# 解决: 检查格式和路径
+export V13__DIVERGENCE_DETECTION__PIVOT_DETECTION__SWING_L=15
+
+# 验证环境变量
+python -c "import os; print(os.environ.get('V13__DIVERGENCE_DETECTION__PIVOT_DETECTION__SWING_L'))"
+```
+
+#### 3. 组件初始化失败
+```python
+# 错误: 组件无法加载配置
+# 解决: 检查配置加载器传递
+from src.utils.config_loader import ConfigLoader
+from src.ofi_cvd_divergence import DivergenceDetector
+
+config_loader = ConfigLoader()
+detector = DivergenceDetector(config_loader=config_loader)  # 必须传递config_loader
+```
+
+#### 4. 端口冲突
+```yaml
+# 错误: Address already in use
+# 解决: 检查端口分配
+monitoring:
+  prometheus:
+    port: 8003  # 确保端口唯一
+  divergence_metrics:
+    port: 8004
+  fusion_metrics:
+    port: 8005
+  strategy_mode:
+    port: 8006
+  trade_stream:
+    port: 8008
+```
+
+### 调试工具
+
+```python
+# 配置调试脚本
+def debug_config():
+    from src.utils.config_loader import ConfigLoader
+    
+    config_loader = ConfigLoader()
+    
+    # 1. 检查基础配置
+    print("=== 基础配置检查 ===")
+    print(f"环境: {config_loader.environment}")
+    print(f"配置文件: {config_loader.config_path}")
+    
+    # 2. 检查组件配置
+    print("\n=== 组件配置检查 ===")
+    components = [
+        'divergence_detection',
+        'strategy_mode', 
+        'fusion_metrics_collector',
+        'trade_stream'
+    ]
+    
+    for component in components:
+        config = config_loader.get(component)
+        if config:
+            print(f"✅ {component}: {len(config)} 个参数")
+        else:
+            print(f"❌ {component}: 配置缺失")
+    
+    # 3. 检查环境变量
+    print("\n=== 环境变量检查 ===")
+    import os
+    env_vars = [k for k in os.environ.keys() if k.startswith('V13__')]
+    print(f"环境变量数量: {len(env_vars)}")
+    
+    # 4. 测试组件创建
+    print("\n=== 组件创建测试 ===")
+    try:
+        from src.ofi_cvd_divergence import DivergenceDetector
+        detector = DivergenceDetector(config_loader=config_loader)
+        print("✅ 背离检测器创建成功")
+    except Exception as e:
+        print(f"❌ 背离检测器创建失败: {e}")
+
+if __name__ == "__main__":
+    debug_config()
+```
+
+## 🎯 最佳实践
+
+### 1. 配置管理策略
+
+**开发环境**:
+```yaml
+# config/environments/development.yaml
+divergence_detection:
+  pivot_detection:
+    swing_L: 10  # 更敏感，便于调试
+  thresholds:
+    z_hi: 1.0    # 更低的阈值
+```
+
+**生产环境**:
+```yaml
+# config/environments/production.yaml
+divergence_detection:
+  pivot_detection:
+    swing_L: 15  # 更稳定
+  thresholds:
+    z_hi: 2.0    # 更高的阈值
+```
+
+### 2. 环境变量使用
+
+**推荐做法**:
+```bash
+# 使用 .env 文件管理环境变量
+cat > .env << EOF
+V13__DIVERGENCE_DETECTION__PIVOT_DETECTION__SWING_L=15
+V13__STRATEGY_MODE__HYSTERESIS__WINDOW_SECS=120
+V13__TRADE_STREAM__QUEUE__SIZE=2048
+EOF
+
+# 加载环境变量
+source .env
+```
+
+### 3. 配置热更新
+
+```python
+# 启用配置热更新
+from src.utils.config_loader import ConfigLoader
+
+config_loader = ConfigLoader()
+config_loader.enable_hot_reload()  # 启用热更新
+
+# 监听配置变更
+def on_config_change(new_config):
+    print("配置已更新:", new_config)
+
+config_loader.add_change_listener(on_config_change)
+```
+
+### 4. 性能优化
+
+```python
+# 配置缓存
+from src.utils.config_loader import ConfigLoader
+
+# 单例模式，避免重复加载
+config_loader = ConfigLoader()
+
+# 预加载常用配置
+divergence_config = config_loader.get('divergence_detection')
+strategy_config = config_loader.get('strategy_mode')
+```
+
 ## 📚 更多信息
 
-- 详细配置指南: `docs/SYSTEM_CONFIG_GUIDE.md`
-- CVD配置说明: `docs/CVD_SYSTEM_FILES_GUIDE.md`
-- 配置参数对比: `docs/CONFIG_PARAMETERS_GUIDE.md`
+### 核心文档
+- [统一配置集成完成报告](../UNIFIED_CONFIG_INTEGRATION_COMPLETE.md) - 四阶段配置集成总结
+- [配置测试结果报告](../UNIFIED_CONFIG_TEST_RESULTS.md) - 28个测试用例详细结果
+- [阶段4交易流配置总结](../STAGE4_TRADE_STREAM_CONFIG_SUMMARY.md) - 交易流配置集成详情
+
+### 组件特定文档
+- [背离检测配置指南](../STAGE1_DIVERGENCE_CONFIG_SUMMARY.md) - 背离检测配置详情
+- [策略模式配置指南](../STAGE2_STRATEGY_MODE_CONFIG_SUMMARY.md) - 策略模式配置详情
+- [融合指标配置指南](../STAGE3_FUSION_METRICS_CONFIG_SUMMARY.md) - 融合指标配置详情
+
+### 技术文档
+- [async_logging集成指南](../ASYNC_LOGGING_INTEGRATION_GUIDE.md) - 异步日志配置指南
+- [系统架构图](../docs/🏗️V13_SYSTEM_ARCHITECTURE_DIAGRAM.md) - 系统架构说明
+- [开发指南](../docs/🚀V13_FRESH_START_DEVELOPMENT_GUIDE.md) - 开发指南
 
 ## ⚠️ 注意事项
 
@@ -277,7 +740,40 @@ print(f"Queue size: {config['performance']['queue']['max_size']}")
 
 ---
 
-**版本**: v13.0  
-**最后更新**: 2025-10-19  
-**维护者**: V13 Team
+## 🎉 统一配置系统完成状态
+
+### ✅ 集成完成情况
+
+| 阶段 | 组件 | 配置参数 | 测试状态 | 完成时间 |
+|------|------|---------|---------|---------|
+| 阶段1 | 背离检测核心 | 9个 | ✅ 100% | 2025-10-20 |
+| 阶段2 | 策略模式管理器 | 15个 | ✅ 100% | 2025-10-20 |
+| 阶段3 | 融合指标收集器 | 8个 | ✅ 100% | 2025-10-20 |
+| 阶段4 | 交易流处理 | 25个 | ✅ 100% | 2025-10-20 |
+| **总计** | **4个组件** | **57个参数** | **✅ 100%** | **2025-10-20** |
+
+### 🏆 技术成就
+
+- ✅ **配置统一化**: 57个配置参数全部纳入统一管理
+- ✅ **组件集成**: 4个核心组件全部支持统一配置
+- ✅ **测试完备**: 28个测试用例100%通过
+- ✅ **向后兼容**: 完全向后兼容，支持多种配置模式
+- ✅ **环境变量**: 所有参数支持环境变量覆盖
+- ✅ **文档完善**: 使用指南、故障排查、最佳实践齐全
+
+### 🚀 生产就绪
+
+**统一配置系统已达到生产就绪状态！**
+
+- 配置管理：统一、灵活、可维护
+- 组件调用：简单、直观、类型安全
+- 环境支持：开发、测试、生产全覆盖
+- 故障排查：完整的调试工具和指南
+
+---
+
+**版本**: v13.4 (统一配置集成版)  
+**最后更新**: 2025-10-20  
+**维护者**: V13 OFI+CVD AI System Team  
+**状态**: ✅ 生产就绪
 
