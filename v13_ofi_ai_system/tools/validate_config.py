@@ -368,16 +368,34 @@ def main():
             # 在严格模式下，旧键冲突会添加到 errs，这里只记录信息
             pass
     
+    # 构建结果摘要
+    result = {
+        "type_errors": errs,
+        "unknown_keys": unknown,
+        "warnings": warnings,
+        "legacy_conflicts": legacy_conflicts,
+        "allow_legacy_keys": allow_legacy,
+        "valid": len(errs) == 0 and len(unknown) == 0,
+        "mode": "strict" if strict_mode else "lenient",
+        "conflicts_count": len(legacy_conflicts),
+        "errors_count": len(errs),
+        "unknown_count": len(unknown),
+        "overall_pass": len(errs) == 0 and len(unknown) == 0 and (allow_legacy or len(legacy_conflicts) == 0),
+        "config_path": str(config_path)
+    }
+    
+    # 输出到 reports/ 目录
+    reports_dir = pathlib.Path(__file__).parent.parent / "reports"
+    reports_dir.mkdir(exist_ok=True)
+    summary_path = reports_dir / "validate_config_summary.json"
+    
+    try:
+        with open(summary_path, "w", encoding="utf-8", newline="") as f:
+            json.dump(result, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        print(f"[WARN] 无法写入摘要文件 {summary_path}: {e}", file=sys.stderr)
+    
     if args.format == "json":
-        result = {
-            "type_errors": errs,
-            "unknown_keys": unknown,
-            "warnings": warnings,
-            "legacy_conflicts": legacy_conflicts,
-            "allow_legacy_keys": allow_legacy,
-            "valid": len(errs) == 0 and len(unknown) == 0,
-            "mode": "strict" if strict_mode else "lenient"
-        }
         print(json.dumps(result, indent=2, ensure_ascii=False))
     else:
         print(f"模式: {'严格' if strict_mode else '宽松'}")

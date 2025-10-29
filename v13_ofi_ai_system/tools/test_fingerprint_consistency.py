@@ -70,16 +70,48 @@ def main():
     
     if not fp_print or not fp_prom:
         print("[FAIL] 未能提取到指纹")
-        return 1
-    
-    if fp_print == fp_prom:
-        print("\n[PASS] 指纹一致")
-        print("[OK] 日志和指标暴露的指纹相同")
-        return 0
+        result = {
+            "fingerprint_logs": fp_print,
+            "fingerprint_metrics": fp_prom,
+            "consistent": False,
+            "error": "未能提取到指纹",
+            "overall_pass": False
+        }
     else:
-        print("\n[FAIL] 指纹不一致")
-        print(f"  差异: {fp_print} vs {fp_prom}")
-        return 1
+        consistent = fp_print == fp_prom
+        if consistent:
+            print("\n[PASS] 指纹一致")
+            print("[OK] 日志和指标暴露的指纹相同")
+            result = {
+                "fingerprint_logs": fp_print,
+                "fingerprint_metrics": fp_prom,
+                "consistent": True,
+                "overall_pass": True
+            }
+        else:
+            print("\n[FAIL] 指纹不一致")
+            print(f"  差异: {fp_print} vs {fp_prom}")
+            result = {
+                "fingerprint_logs": fp_print,
+                "fingerprint_metrics": fp_prom,
+                "consistent": False,
+                "error": f"指纹不一致: {fp_print} vs {fp_prom}",
+                "overall_pass": False
+            }
+    
+    # 输出 JSON 报告
+    reports_dir = Path(__file__).parent.parent / "reports"
+    reports_dir.mkdir(exist_ok=True)
+    report_path = reports_dir / "fingerprint_consistency.json"
+    
+    try:
+        with open(report_path, "w", encoding="utf-8", newline="") as f:
+            json.dump(result, f, indent=2, ensure_ascii=False)
+        print(f"\n[REPORT] 报告已保存到: {report_path}")
+    except Exception as e:
+        print(f"\n[WARN] 无法写入报告文件: {e}", file=sys.stderr)
+    
+    return 0 if result.get("overall_pass", False) else 1
 
 
 if __name__ == "__main__":

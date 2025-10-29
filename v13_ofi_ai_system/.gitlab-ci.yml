@@ -1,0 +1,119 @@
+stages:
+  - validate
+  - test
+  - canary
+  - report
+
+variables:
+  PYTHON_VERSION: "3.10"
+
+validate_config:
+  stage: validate
+  image: python:${PYTHON_VERSION}
+  script:
+    - pip install -r requirements.txt
+    - cd v13_ofi_ai_system
+    - python tools/validate_config.py --strict --format json
+  artifacts:
+    paths:
+      - v13_ofi_ai_system/reports/validate_config_summary.json
+    expire_in: 30 days
+  only:
+    - merge_requests
+    - main
+    - master
+
+unit_tests:
+  stage: test
+  image: python:${PYTHON_VERSION}
+  script:
+    - pip install -r requirements.txt
+    - pip install pytest
+    - cd v13_ofi_ai_system
+    - pytest tests/ -v
+  only:
+    - merge_requests
+    - main
+    - master
+
+negative_regression:
+  stage: test
+  image: python:${PYTHON_VERSION}
+  script:
+    - pip install -r requirements.txt
+    - pip install pytest
+    - cd v13_ofi_ai_system
+    - pytest tests/test_negative_regression.py -v
+  artifacts:
+    paths:
+      - v13_ofi_ai_system/reports/validate_config_summary.json
+    expire_in: 30 days
+  only:
+    - merge_requests
+    - main
+    - master
+
+runtime_probe:
+  stage: canary
+  image: python:${PYTHON_VERSION}
+  script:
+    - pip install -r requirements.txt
+    - cd v13_ofi_ai_system
+    - python tools/runtime_probe.py --smoke-secs 60 --stress-reload 5
+  artifacts:
+    paths:
+      - v13_ofi_ai_system/reports/runtime_probe_report.json
+    expire_in: 30 days
+  only:
+    - merge_requests
+    - main
+    - master
+
+paper_canary:
+  stage: canary
+  image: python:${PYTHON_VERSION}
+  script:
+    - pip install -r requirements.txt
+    - cd v13_ofi_ai_system
+    - python tools/paper_canary.py --mins 10 --p99-limit-ms 500
+  artifacts:
+    paths:
+      - v13_ofi_ai_system/reports/paper_canary_report.json
+    expire_in: 30 days
+  timeout: 15 minutes
+  only:
+    - merge_requests
+    - main
+    - master
+
+fingerprint_consistency:
+  stage: canary
+  image: python:${PYTHON_VERSION}
+  script:
+    - pip install -r requirements.txt
+    - cd v13_ofi_ai_system
+    - python tools/test_fingerprint_consistency.py
+  artifacts:
+    paths:
+      - v13_ofi_ai_system/reports/fingerprint_consistency.json
+    expire_in: 30 days
+  only:
+    - merge_requests
+    - main
+    - master
+
+generate_release_notes:
+  stage: report
+  image: python:${PYTHON_VERSION}
+  script:
+    - pip install -r requirements.txt
+    - cd v13_ofi_ai_system
+    - python tools/generate_release_notes.py
+  artifacts:
+    paths:
+      - v13_ofi_ai_system/reports/RELEASE_NOTES.md
+    expire_in: 30 days
+  only:
+    - merge_requests
+  when: manual
+

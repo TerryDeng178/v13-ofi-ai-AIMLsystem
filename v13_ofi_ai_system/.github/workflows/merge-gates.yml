@@ -1,0 +1,167 @@
+name: Merge Gates & Paper Sim Canary
+
+on:
+  pull_request:
+    branches:
+      - main
+      - master
+      - develop
+  push:
+    branches:
+      - main
+      - master
+
+jobs:
+  validate-and-canary:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.9", "3.10"]
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest
+      
+      - name: Validate Config (Strict)
+        run: |
+          cd v13_ofi_ai_system
+          python tools/validate_config.py --strict --format json
+        continue-on-error: false
+      
+      - name: Run Unit Tests
+        run: |
+          cd v13_ofi_ai_system
+          pytest tests/ -v
+      
+      - name: Run Negative Regression Tests
+        run: |
+          cd v13_ofi_ai_system
+          pytest tests/test_negative_regression.py -v
+      
+      - name: Runtime Probe (60s smoke + 5× reload)
+        run: |
+          cd v13_ofi_ai_system
+          python tools/runtime_probe.py --smoke-secs 60 --stress-reload 5
+        continue-on-error: false
+      
+      - name: Paper Canary (10min for CI)
+        run: |
+          cd v13_ofi_ai_system
+          python tools/paper_canary.py --mins 10 --p99-limit-ms 500
+        continue-on-error: false
+        timeout-minutes: 15
+      
+      - name: Fingerprint Consistency Test
+        run: |
+          cd v13_ofi_ai_system
+          python tools/test_fingerprint_consistency.py
+      
+      - name: Upload Reports
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: canary-reports-${{ matrix.python-version }}
+          path: |
+            v13_ofi_ai_system/reports/validate_config_summary.json
+            v13_ofi_ai_system/reports/runtime_probe_report.json
+            v13_ofi_ai_system/reports/paper_canary_report.json
+            v13_ofi_ai_system/reports/fingerprint_consistency.json
+          retention-days: 30
+      
+      - name: Generate Release Notes
+        if: github.event_name == 'pull_request'
+        run: |
+          cd v13_ofi_ai_system
+          python tools/generate_release_notes.py
+      
+      - name: Check Overall Pass & Gate Requirements
+        run: |
+          cd v13_ofi_ai_system
+          python -c "
+          import json
+          import sys
+          from pathlib import Path
+          
+          reports_dir = Path('reports')
+          all_passed = True
+          
+          # 1. 检查 validate_config_summary.json
+          validate_path = reports_dir / 'validate_config_summary.json'
+          if not validate_path.exists():
+              print('[FAIL] Missing: validate_config_summary.json')
+              sys.exit(1)
+          
+          with open(validate_path, 'r', encoding='utf-8') as f:
+              validate_data = json.load(f)
+          
+          if not validate_data.get('overall_pass', False):
+              print('[FAIL] validate_config: overall_pass must be true')
+              all_passed = False
+          if validate_data.get('unknown_count', -1) != 0:
+              print(f'[FAIL] validate_config: unknown_count must be 0, got {validate_data.get(\"unknown_count\")}')
+              all_passed = False
+          if validate_data.get('conflicts_count', -1) != 0:
+              allow_legacy = validate_data.get('allow_legacy_keys', False)
+              if not allow_legacy:
+                  print(f'[FAIL] validate_config: conflicts_count must be 0 when not allowing legacy keys, got {validate_data.get(\"conflicts_count\")}')
+                  all_passed = False
+          
+          # 2. 检查 runtime_probe_report.json
+          probe_path = reports_dir / 'runtime_probe_report.json'
+          if not probe_path.exists():
+              print('[FAIL] Missing: runtime_probe_report.json')
+              sys.exit(1)
+          
+          with open(probe_path, 'r', encoding='utf-8') as f:
+              probe_data = json.load(f)
+          
+          if not probe_data.get('overall_pass', False):
+              print('[FAIL] runtime_probe: overall_pass must be true')
+              all_passed = False
+          
+          smoke = probe_data.get('smoke_test', {})
+          if smoke.get('duration_secs', 0) < 60:
+              print(f'[WARN] runtime_probe: smoke test duration {smoke.get(\"duration_secs\")}s < 60s (gate requirement)')
+          
+          reload = probe_data.get('stress_reload', {})
+          if reload.get('reload_count', 0) < 5:
+              print(f'[WARN] runtime_probe: reload count {reload.get(\"reload_count\")} < 5 (gate requirement)')
+          
+          # 检查 p99 时延阈值（建议阈值 200ms，当前 44ms 有充足余量）
+          p99_latency = reload.get('reload_latency_p99_ms')
+          if p99_latency and p99_latency > 200:
+              print(f'[FAIL] runtime_probe: reload_latency_p99_ms={p99_latency:.2f}ms exceeds threshold 200ms')
+              all_passed = False
+          
+          # 3. 检查其他报告
+          for report_name in ['paper_canary_report.json', 'fingerprint_consistency.json']:
+              report_path = reports_dir / report_name
+              if not report_path.exists():
+                  print(f'[FAIL] Missing: {report_name}')
+                  all_passed = False
+                  continue
+              
+              with open(report_path, 'r', encoding='utf-8') as f:
+                  data = json.load(f)
+              
+              if not data.get('overall_pass', False):
+                  print(f'[FAIL] {report_name}: overall_pass must be true')
+                  all_passed = False
+          
+          if not all_passed:
+              sys.exit(1)
+          print('[OK] All reports passed and met gate requirements')
+          "
+        continue-on-error: false
+
